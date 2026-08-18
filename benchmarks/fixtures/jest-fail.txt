@@ -1,0 +1,35 @@
+PASS src/health.test.ts
+PASS src/util.test.ts
+FAIL src/auth.test.ts
+  ● authenticate › returns 200
+
+    expect(received).toBe(expected)
+
+    Expected: 200
+    Received: 401
+
+      80 |     const res = await login();
+      81 |     expect(res.status).toBe(200);
+      82 |   });
+
+FAIL src/oauth.test.ts
+  ● redirect_uri
+
+    redirect_uri mismatch
+
+      190 |     expect(loc).toEqual(expected);
+
+FAIL src/session.test.ts
+  ● expired session
+
+    expired session
+
+FAIL src/token.test.ts
+  ● invalid signature
+
+    invalid signature
+
+Test Suites: 4 failed, 40 passed, 44 total
+Tests:       4 failed, 819 passed, 823 total
+Snapshots:   0 total
+Time:        8.214 s

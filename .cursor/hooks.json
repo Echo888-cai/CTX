@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [{ "command": "ctx hook" }],
+    "sessionEnd": [{ "command": "ctx hook" }],
+    "preToolUse": [{ "command": "ctx hook" }],
+    "postToolUse": [{ "command": "ctx hook" }],
+    "beforeReadFile": [{ "command": "ctx hook" }],
+    "beforeSubmitPrompt": [{ "command": "ctx hook" }]
+  }
+}

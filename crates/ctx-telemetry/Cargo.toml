@@ -1,0 +1,11 @@
+[package]
+name = "ctx-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Context efficiency metrics — avoided tokens, never invented dollars"
+
+[dependencies]
+ctx-pager.workspace = true
+ctx-store.workspace = true

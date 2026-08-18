@@ -1,0 +1,41 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /app
+collected 823 items
+
+tests/test_health.py ........................................           [  4%]
+tests/test_util.py ................................................     [ 10%]
+tests/test_ok.py ........................................................................ [ 80%]
+tests/test_auth.py ....F                                                [ 90%]
+tests/test_oauth.py F                                                   [ 92%]
+tests/test_session.py F                                                 [ 95%]
+tests/test_token.py F                                                   [100%]
+
+=================================== FAILURES ===================================
+_______________________________ test_login ________________________________
+tests/test_auth.py:82: in test_login
+    assert resp.status_code == 200
+E   assert 401 == 200
+E    +  where 401 = resp.status_code
+
+____________________________ test_redirect ________________________________
+tests/test_oauth.py:192: in test_redirect
+    assert loc == expected
+E   AssertionError: redirect_uri mismatch
+
+_____________________________ test_expire _________________________________
+tests/test_session.py:71: in test_expire
+    assert session.alive
+E   AssertionError: expired session
+
+______________________________ test_sig ___________________________________
+tests/test_token.py:114: in test_token_sig
+    verify(sig)
+E   AssertionError: invalid signature
+
+=========================== short test summary info ============================
+FAILED tests/test_auth.py::test_login - assert 401 == 200
+FAILED tests/test_oauth.py::test_redirect - AssertionError: redirect_uri mismatch
+FAILED tests/test_session.py::test_expire - AssertionError: expired session
+FAILED tests/test_token.py::test_token_sig - AssertionError: invalid signature
+================== 4 failed, 819 passed, 12 warnings in 12.41s ==================

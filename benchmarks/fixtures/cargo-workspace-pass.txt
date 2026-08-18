@@ -1,0 +1,107 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/main.rs (target/debug/deps/ctx-bc957c11d14a141e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_core-98a27f9052ef5b26)
+
+running 5 tests
+test wrap::tests::skips_nested ... ok
+test wrap::tests::wraps_npm_test ... ok
+test wrap::tests::quotes_pipelines ... ok
+test wrap::tests::skips_vim ... ok
+test runtime::tests::virtualizes_noisy_shell_and_fetches_raw ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_mcp-aa93129f11a4a988)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_optimizer-160d0ead5adf24b1)
+
+running 7 tests
+test ansi::tests::strips_color ... ok
+test ansi::tests::detects_spinner ... ok
+test tokens::tests::empty_is_zero ... ok
+test tokens::tests::scales_with_length ... ok
+test mcp::tests::summarizes_big_array ... ok
+test shell::tests::strips_ansi_progress ... ok
+test shell::tests::cargo_keeps_failures_drops_ok ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_pager-36cd913241f3bf73)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_protocol-fedcc3c5e8440acd)
+
+running 2 tests
+test uri::tests::roundtrip ... ok
+test event::tests::spec_json_roundtrip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_store-02de168c47c30b4f)
+
+running 3 tests
+test blob::tests::whitespace_normalized ... ok
+test blob::tests::stable_hash ... ok
+test tests::put_get_roundtrip ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/ctx_telemetry-625f1125223a341b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_optimizer
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_pager
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ctx_telemetry
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

@@ -1,0 +1,15 @@
+[package]
+name = "ctx-optimizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Deterministic context optimizers (ShellGuard, ReadGuard, MCPGuard, DuplicateGuard)"
+
+[dependencies]
+ctx-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

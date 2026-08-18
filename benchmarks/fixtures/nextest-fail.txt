@@ -1,0 +1,12 @@
+    Starting 17 tests across 8 binaries
+        PASS [   0.010s] ctx-core wrap::tests::skips_nested
+        PASS [   0.008s] ctx-core wrap::tests::wraps_npm_test
+        PASS [   0.009s] ctx-protocol uri::tests::roundtrip
+        FAIL [   0.041s] ctx-optimizer shell::tests::must_keep_error
+  stdout ───
+    assertion failed: left == right
+      left: 401
+     right: 200
+        PASS [   0.011s] ctx-store blob::tests::stable_hash
+────────────
+     Summary [   0.120s] 17 tests run: 16 passed, 1 failed, 0 skipped

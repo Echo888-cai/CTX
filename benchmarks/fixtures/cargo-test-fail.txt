@@ -1,0 +1,50 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/lib.rs (target/debug/deps/app-aaaaaaaaaaaaaaaa)
+
+running 12 tests
+test foo::bar ... ok
+test foo::baz ... ok
+test health::ready ... ok
+test auth::login ... FAILED
+test oauth::redirect ... FAILED
+test session::expire ... FAILED
+test token::sig ... FAILED
+test util::parse ... ok
+test util::format ... ok
+test http::get ... ok
+test http::post ... ok
+test http::retry ... ok
+
+successes:
+
+---- foo::bar stdout ----
+this passing test printed a lot of noise
+ok
+
+failures:
+
+---- auth::login stdout ----
+thread 'auth::login' panicked at src/auth.rs:82:5:
+assertion `left == right` failed
+  left: 401
+  right: 200
+
+---- oauth::redirect stdout ----
+thread 'oauth::redirect' panicked at src/oauth.rs:192:5:
+redirect_uri mismatch
+
+---- session::expire stdout ----
+thread 'session::expire' panicked at src/session.rs:71:5:
+expired session
+
+---- token::sig stdout ----
+thread 'token::sig' panicked at src/token.rs:114:5:
+invalid signature
+
+failures:
+    auth::login
+    oauth::redirect
+    session::expire
+    token::sig
+
+test result: FAILED. 8 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s

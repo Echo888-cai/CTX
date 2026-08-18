@@ -1,0 +1,26 @@
+[package]
+name = "ctx-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "CTX CLI — virtual memory for AI context"
+
+[[bin]]
+name = "ctx"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ctx-core.workspace = true
+ctx-mcp.workspace = true
+ctx-protocol.workspace = true
+dirs.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true

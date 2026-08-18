@@ -1,0 +1,16 @@
+[package]
+name = "ctx-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "CTX MCP server — page-in API (ctx_fetch, ctx_read, ctx_search, ctx_inspect, ctx_why)"
+
+[dependencies]
+ctx-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+ctx-store.workspace = true
+tempfile.workspace = true

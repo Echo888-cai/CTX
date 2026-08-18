@@ -1,0 +1,19 @@
+    Checking ctx-core v0.1.0 (/Users/arlan/Vibe Coding/CTX/crates/ctx-core)
+error[E0308]: mismatched types
+  --> crates/ctx-core/src/runtime.rs:82:20
+   |
+82 |     let n: u32 = "nope";
+   |            ---   ^^^^^^ expected `u32`, found `&str`
+   |            |
+   |            expected due to this
+
+error[E0425]: cannot find value `missing` in this scope
+  --> crates/ctx-core/src/runtime.rs:90:5
+   |
+90 |     missing
+   |     ^^^^^^^ not found in this scope
+
+error: could not compile `ctx-core` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+    Checking ctx-store v0.1.0 (/Users/arlan/Vibe Coding/CTX/crates/ctx-store)
+    Checking ctx-protocol v0.1.0 (/Users/arlan/Vibe Coding/CTX/crates/ctx-protocol)

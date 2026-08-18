@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+.ctx/
+.env
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+coverage/
+*.profraw
