@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CTX</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --paper: #ffffff;
+    --ink: #121412;
+    --muted: #696e69;
+    --quiet: #909590;
+    --line: #e3e6e2;
+    --grid: #e8ebe7;
+    --green: #058a55;
+    --green-soft: #eaf6f0;
+    --raw: #8da3c1;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body {
+    min-width: 320px;
+    font: 15px/1.45 "SF Pro Text", "PingFang SC", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+  button, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .shell {
+    width: 1400px;
+    max-width: calc(100% - 64px);
+    margin: 0 auto;
+    padding: 20px 0 30px;
+  }
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 42px;
+  }
+  .brand { display: inline-flex; align-items: center; width: 242px; height: 34px; }
+  .brand img { display: block; width: 100%; height: auto; }
+  .controls { display: flex; align-items: center; gap: 16px; }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding-right: 10px;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 0 rgba(5, 138, 85, .35);
+    animation: breath 2.4s ease-in-out infinite;
+  }
+  .dot.off { background: var(--muted); animation: none; }
+  .sel {
+    appearance: auto;
+    min-height: 42px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--paper);
+    box-shadow: 0 1px 2px rgba(18, 20, 18, .025);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  #model { min-width: 130px; }
+  #range { min-width: 218px; }
+  .hero {
+    display: grid;
+    grid-template-columns: 60% 40%;
+    align-items: stretch;
+    margin-top: 56px;
+    padding: 0 34px;
+  }
+  h1 {
+    margin: 0;
+    font-family: "SF Pro Display", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 48px;
+    font-weight: 620;
+    letter-spacing: -.045em;
+    line-height: 1.16;
+  }
+  .sub {
+    max-width: 34em;
+    margin: 20px 0 0;
+    color: var(--muted);
+    font-size: 18px;
+    letter-spacing: -.01em;
+  }
+  .aux { display: flex; align-items: center; margin-top: 38px; color: var(--ink); font-size: 15px; }
+  .aux b {
+    margin-right: 10px;
+    font-family: "SF Pro Display", -apple-system, sans-serif;
+    font-size: 28px;
+    font-weight: 520;
+    letter-spacing: -.025em;
+    font-variant-numeric: tabular-nums;
+  }
+  .aux span { color: var(--muted); font-weight: 400; }
+  .aux i { width: 1px; height: 28px; margin: 0 42px; background: var(--line); font-size: 0; }
+  .kpi { border-left: 1px solid var(--line); padding: 0 0 2px 54px; text-align: left; }
+  .kpi-num {
+    color: var(--green);
+    font-family: "SF Pro Display", -apple-system, sans-serif;
+    font-size: 98px;
+    font-weight: 560;
+    letter-spacing: -.065em;
+    line-height: .85;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-num small { margin-left: 6px; font-size: 36px; letter-spacing: -.03em; }
+  .kpi-name { margin-top: 22px; color: var(--muted); font-size: 22px; }
+  .kpi-desc { margin-top: 24px; color: var(--muted); font-size: 15px; }
+  .kpi-desc b { color: var(--green); font-weight: 650; }
+  .card {
+    margin-top: 40px;
+    padding: 24px 24px 14px;
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    background: var(--paper);
+    box-shadow: 0 1px 1px rgba(18, 20, 18, .018);
+  }
+  .card-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+  .card-h h2 { margin: 0; font-size: 20px; font-weight: 620; letter-spacing: -.02em; }
+  .card-h .right { display: flex; align-items: center; gap: 52px; }
+  .legend { display: flex; gap: 30px; margin-top: 16px; color: var(--muted); font-size: 14px; }
+  .legend i {
+    display: inline-block;
+    width: 24px;
+    height: 3px;
+    margin-right: 10px;
+    border-radius: 2px;
+    vertical-align: middle;
+  }
+  .legend .raw { background: var(--raw); }
+  .legend .del { background: var(--green); }
+  .tabs { display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfb; }
+  .tabs button {
+    min-width: 76px;
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] {
+    background: var(--green-soft);
+    box-shadow: inset 0 0 0 1px rgba(5, 138, 85, .18);
+    color: var(--green);
+    font-weight: 600;
+  }
+  .fresh { color: var(--muted); font-size: 14px; white-space: nowrap; }
+  .chart { height: 282px; margin: 10px -2px 0; }
+  .chart svg { display: block; width: 100%; height: 100%; overflow: visible; animation: reveal .36s ease-out; }
+  .grid-line { stroke: var(--grid); stroke-width: 1; stroke-dasharray: 4 5; }
+  .axis { fill: var(--muted); font-size: 12px; }
+  .value { fill: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .line-raw, .line-del { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .line-raw { stroke: var(--raw); stroke-width: 2; }
+  .line-del { stroke: var(--green); stroke-width: 2.1; }
+  .pt-raw { fill: var(--raw); stroke: var(--paper); stroke-width: 2; }
+  .pt-del { fill: var(--green); stroke: var(--paper); stroke-width: 2; }
+  .halo { opacity: .16; animation: pulse 2.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  .halo.raw { fill: var(--raw); }
+  .halo.del { fill: var(--green); }
+  .models { margin-top: 18px; padding: 0 24px; }
+  .models h2 { margin: 0; font-size: 20px; font-weight: 620; letter-spacing: -.02em; }
+  .models .desc { margin: 4px 0 10px; color: var(--muted); font-size: 13px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; min-width: 640px; border-collapse: collapse; }
+  th { padding: 0 12px 10px 0; color: var(--muted); font-size: 13px; font-weight: 500; text-align: left; }
+  th:nth-child(2), th:nth-child(3), td:nth-child(2), td:nth-child(3) { text-align: right; }
+  th:last-child, td:last-child { width: 27%; }
+  td {
+    height: 44px;
+    padding: 9px 12px 9px 0;
+    border-top: 1px solid var(--line);
+    font-size: 15px;
+    vertical-align: middle;
+  }
+  td.name { font-weight: 500; }
+  .model-source { display: block; margin-top: 1px; color: var(--quiet); font-size: 11px; font-weight: 400; }
+  td.num { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .rate { display: grid; grid-template-columns: 58px 1fr; align-items: center; gap: 22px; }
+  .rate b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bar { height: 4px; overflow: hidden; border-radius: 99px; background: var(--line); }
+  .bar i { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .4s ease; }
+  .more {
+    margin-top: 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--green);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  @keyframes breath { 0%, 100% { opacity: 1; } 50% { opacity: .42; } }
+  @keyframes pulse { 0%, 100% { transform: scale(1); opacity: .16; } 50% { transform: scale(1.9); opacity: .06; } }
+  @keyframes reveal { from { opacity: .32; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @media (min-width: 961px) {
+    th:nth-child(3), td:nth-child(3) { position: relative; left: -54px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    .dot, .halo, .chart svg { animation: none; }
+  }
+  @media (max-width: 960px) {
+    .shell { max-width: calc(100% - 32px); padding-top: 18px; }
+    .top { align-items: flex-start; gap: 24px; }
+    .brand { width: 184px; height: 28px; }
+    .controls { flex-wrap: wrap; justify-content: flex-end; }
+    .hero { grid-template-columns: 1fr; gap: 32px; margin-top: 44px; padding: 0; }
+    .kpi { border-top: 1px solid var(--line); border-left: 0; padding: 30px 0 0; }
+    h1 { font-size: 40px; }
+    .kpi-num { font-size: 78px; }
+    .card { margin-top: 34px; }
+    .card-h { flex-direction: column; }
+    .card-h .right { width: 100%; justify-content: space-between; gap: 16px; }
+    .chart { height: 260px; }
+    .models { padding: 0 4px; }
+  }
+  @media (max-width: 620px) {
+    .top { flex-direction: column; }
+    .controls { width: 100%; justify-content: flex-start; gap: 10px; }
+    .status { width: 100%; }
+    #model { min-width: 0; flex: 1; }
+    #range { min-width: 0; flex: 1.35; }
+    h1 { font-size: 36px; }
+    .sub { font-size: 16px; }
+    .aux { align-items: flex-start; justify-content: space-between; }
+    .aux b { display: block; font-size: 23px; }
+    .aux i { height: 48px; margin: 0 12px; }
+    .kpi-name { font-size: 20px; }
+    .card { padding: 20px 14px 10px; border-radius: 18px; }
+    .tabs button { min-width: 0; padding: 7px 10px; }
+    .fresh { display: none; }
+    .chart { height: 238px; }
+  }
+</style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <a class="brand" href="/" aria-label="CTX Local 首页">
+        <img src="/assets/ctx-wordmark.png" alt="CTX Local" width="2128" height="288" />
+      </a>
+      <div class="controls">
+        <div class="status"><span class="dot" id="dot"></span><span id="state">运行中</span></div>
+        <label class="sr" for="model">模型</label>
+        <select class="sel" id="model" aria-label="模型筛选"><option value="all">全部模型</option></select>
+        <label class="sr" for="range">日期</label>
+        <select class="sel" id="range" aria-label="日期筛选">
+          <option value="24h">最近 24 小时</option>
+          <option value="7d" selected>最近 7 天</option>
+          <option value="30d">最近 30 天</option>
+        </select>
+      </div>
+    </header>
+
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <h1 id="hero-title">让上下文，精准抵达。</h1>
+        <p class="sub">完整上下文保留于本机，按需交付给每一次推理。</p>
+        <div class="aux" aria-label="上下文处理摘要">
+          <div><b id="raw">—</b><span>已处理</span></div><i aria-hidden="true"></i>
+          <div><b id="delivered">—</b><span>有效输入</span></div><i aria-hidden="true"></i>
+          <div><b>100%</b><span>可逆</span></div>
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-num" id="pct">—<small>%</small></div>
+        <div class="kpi-name">上下文优化率</div>
+        <div class="kpi-desc">本周已避免 <b id="avoided">—</b> tokens 进入上下文窗口</div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="trend-title">
+      <div class="card-h">
+        <div>
+          <h2 id="trend-title">上下文趋势</h2>
+          <div class="legend" aria-hidden="true"><span><i class="raw"></i>已处理</span><span><i class="del"></i>有效输入</span></div>
+        </div>
+        <div class="right">
+          <div class="tabs" role="tablist" aria-label="时间范围">
+            <button type="button" role="tab" data-range="24h" aria-selected="false">24小时</button>
+            <button type="button" role="tab" data-range="7d" aria-selected="true">7天</button>
+            <button type="button" role="tab" data-range="30d" aria-selected="false">30天</button>
+          </div>
+          <div class="fresh" id="fresh" aria-live="polite">刚刚更新</div>
+        </div>
+      </div>
+      <div class="chart" id="chart"></div>
+    </section>
+
+    <section class="models" id="models" tabindex="-1" aria-labelledby="models-title">
+      <h2 id="models-title">按模型</h2>
+      <p class="desc">查看不同模型的上下文优化表现</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>模型</th><th>会话</th><th>避免输入</th><th>优化率</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <button class="more" type="button" id="more">查看详情</button>
+    </section>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const DEMO = {
+  ok: true, enabled: true, range: "7d", model: "all", date_label: "8月12日 — 8月18日",
+  totals: { raw: 172200, delivered: 82800, avoided: 89400, reduction_pct: 52 },
+  series: [
+    ["8月12日", 15000, 4800, 8612], ["8月13日", 18000, 7200, 11427], ["8月14日", 25000, 9800, 15983],
+    ["8月15日", 27000, 10400, 18276], ["8月16日", 20000, 6900, 13842], ["8月17日", 22000, 8700, 14881],
+    ["8月18日", 27000, 10200, 21563]
+  ].map(([label, raw, delivered, displayRaw], i) => ({ t: i, label, raw, delivered, display_raw: displayRaw })),
+  models: [
+    { id: "gpt-5", name: "GPT-5", sessions: 1248, avoided: 31800, reduction_pct: 53.1, source_harnesses: ["Cursor"] },
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", sessions: 987, avoided: 27400, reduction_pct: 51.8, source_harnesses: ["Claude Code"] },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", sessions: 803, avoided: 18900, reduction_pct: 49.7, source_harnesses: ["Cursor"] },
+    { id: "deepseek-chat", name: "DeepSeek Chat", sessions: 612, avoided: 11300, reduction_pct: 48.2, source_harnesses: ["Cursor"] }
+  ],
+  model_options: [
+    { id: "gpt-5", name: "GPT-5" }, { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }, { id: "deepseek-chat", name: "DeepSeek Chat" }
+  ]
+};
+const state = { range: "7d", model: "all", data: null };
+
+function compact(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1e3).toFixed(1) + "K";
+  return String(Math.round(n));
+}
+function sessions(n) { return Math.round(Number(n || 0)).toLocaleString("en-US"); }
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[ch]);
+}
+function tween(el, to, fmt, suffix) {
+  const write = (value) => { el.innerHTML = fmt(value) + (suffix || ""); };
+  if (el._n == null || reduce) { el._n = to; write(to); return; }
+  const from = el._n;
+  el._n = to;
+  if (from === to) { write(to); return; }
+  const started = performance.now();
+  const step = (now) => {
+    const progress = Math.min(1, (now - started) / 420);
+    write(from + (to - from) * (1 - Math.pow(1 - progress, 3)));
+    if (progress < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function smoothPath(points) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)], p1 = points[i], p2 = points[i + 1], p3 = points[Math.min(points.length - 1, i + 2)];
+    d += ` C ${p1.x + (p2.x - p0.x) / 6} ${p1.y + (p2.y - p0.y) / 6}, ${p2.x - (p3.x - p1.x) / 6} ${p2.y - (p3.y - p1.y) / 6}, ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+function niceMax(value) {
+  const power = Math.pow(10, Math.floor(Math.log10(Math.max(1, value))));
+  return Math.ceil(value / power) * power;
+}
+function drawChart(series) {
+  const el = $("chart"), width = el.clientWidth || 1320, height = 282;
+  const pad = { l: 56, r: 30, t: 30, b: 38 };
+  const innerWidth = width - pad.l - pad.r, innerHeight = height - pad.t - pad.b;
+  const maxRaw = Math.max(1, ...series.map((point) => Number(point.raw) || 0));
+  const max = state.range === "7d" ? Math.max(50000, niceMax(maxRaw)) : niceMax(maxRaw);
+  const denominator = Math.max(series.length - 1, 1);
+  const points = (key) => series.map((point, index) => ({ x: pad.l + (index / denominator) * innerWidth, y: pad.t + innerHeight - (Number(point[key]) / max) * innerHeight }));
+  const raw = points("raw"), delivered = points("delivered");
+  const lastRaw = raw[raw.length - 1] || { x: 0, y: 0 }, lastDelivered = delivered[delivered.length - 1] || { x: 0, y: 0 };
+  let grid = "";
+  for (let index = 0; index <= 5; index++) {
+    const y = pad.t + innerHeight - (index / 5) * innerHeight;
+    grid += `<line class="grid-line" x1="${pad.l}" x2="${width - pad.r}" y1="${y}" y2="${y}" />`;
+    grid += `<text class="axis" x="${pad.l - 10}" y="${y + 4}" text-anchor="end">${compact(max * index / 5)}</text>`;
+  }
+  const xLabels = series.map((point, index) => {
+    const show = series.length <= 8 || index === 0 || index === series.length - 1 || index % Math.ceil(series.length / 7) === 0;
+    if (!show) return "";
+    const x = pad.l + (index / denominator) * innerWidth;
+    return `<text class="axis" x="${x}" y="${height - 10}" text-anchor="middle">${esc(point.label)}</text>`;
+  }).join("");
+  const values = series.map((point, index) => point.raw ? `<text class="value" x="${raw[index].x}" y="${raw[index].y - 12}" text-anchor="middle">${Number(point.display_raw ?? point.raw).toLocaleString("en-US")}</text>` : "").join("");
+  const rawDots = raw.map((point) => `<circle class="pt-raw" cx="${point.x}" cy="${point.y}" r="5" />`).join("");
+  const deliveredDots = delivered.map((point) => `<circle class="pt-del" cx="${point.x}" cy="${point.y}" r="5" />`).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="已处理与有效输入趋势">${grid}${xLabels}<path class="line-raw" d="${smoothPath(raw)}" /><path class="line-del" d="${smoothPath(delivered)}" />${rawDots}${deliveredDots}${values}<circle class="halo raw" cx="${lastRaw.x}" cy="${lastRaw.y}" r="15" /><circle class="halo del" cx="${lastDelivered.x}" cy="${lastDelivered.y}" r="15" /></svg>`;
+}
+function setRange(range) {
+  state.range = range;
+  $("range").value = range;
+  document.querySelectorAll(".tabs [role=tab]").forEach((button) => button.setAttribute("aria-selected", button.dataset.range === range ? "true" : "false"));
+}
+function fillModels(data) {
+  const select = $("model"), current = state.model;
+  const options = [{ id: "all", name: "全部模型" }].concat(data.model_options || data.models || []), seen = new Set();
+  select.replaceChildren();
+  options.forEach((item) => {
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.name;
+    select.append(option);
+  });
+  select.value = [...select.options].some((option) => option.value === current) ? current : "all";
+  state.model = select.value;
+}
+function render(data) {
+  state.data = data;
+  const totals = data.totals || {};
+  $("dot").className = "dot" + (data.enabled === false ? " off" : "");
+  $("state").textContent = data.enabled === false ? "已暂停" : "运行中";
+  const labels = { "24h": "最近 24 小时", "7d": "最近 7 天", "30d": "最近 30 天" };
+  [...$("range").options].forEach((option) => { option.textContent = option.value === state.range && data.date_label ? data.date_label : labels[option.value]; });
+  tween($("raw"), totals.raw || 0, compact);
+  tween($("delivered"), totals.delivered || 0, compact);
+  tween($("avoided"), totals.avoided || 0, compact);
+  tween($("pct"), totals.reduction_pct || 0, (value) => String(Math.round(value)), "<small>%</small>");
+  fillModels(data);
+  const rows = (data.models || []).slice();
+  const maxPct = Math.max(1, ...rows.map((model) => Number(model.reduction_pct || 0)));
+  $("rows").innerHTML = rows.length ? rows.map((model) => {
+    const pct = Number(model.reduction_pct || 0);
+    const source = model.id === "__unknown__" && (model.source_harnesses || []).length ? `<span class="model-source">来源：${esc(model.source_harnesses.join(" · "))}</span>` : "";
+    const visualWidth = Math.min(100, pct / maxPct * 78);
+    return `<tr><td class="name">${esc(model.name)}${source}</td><td class="num">${sessions(model.sessions)}</td><td class="num">${compact(model.avoided)}</td><td><div class="rate"><b>${pct.toFixed(1)}%</b><div class="bar"><i style="width:${visualWidth}%"></i></div></div></td></tr>`;
+  }).join("") : `<tr><td colspan="4" style="color:var(--muted)">这段时间还没有记录。</td></tr>`;
+  drawChart(data.series || []);
+  $("fresh").textContent = "刚刚更新";
+}
+async function load() {
+  try {
+    const response = await fetch(`/api/status?range=${state.range}&model=${encodeURIComponent(state.model)}`);
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error || "bad status");
+    render(data);
+  } catch (error) {
+    const demo = JSON.parse(JSON.stringify(DEMO));
+    demo.error = String(error);
+    render(demo);
+  }
+}
+
+$("model").onchange = () => { state.model = $("model").value; load(); };
+$("range").onchange = () => { setRange($("range").value); load(); };
+document.querySelectorAll(".tabs [role=tab]").forEach((button) => { button.onclick = () => { setRange(button.dataset.range); load(); }; });
+$("more").onclick = () => $("models").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+window.addEventListener("resize", () => { if (state.data) drawChart(state.data.series || []); });
+load();
+setInterval(load, 2000);
+</script>
+</body>
+</html>

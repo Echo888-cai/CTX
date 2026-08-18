@@ -1,3 +1,4 @@
+mod app;
 mod demo;
 mod doctor;
 mod exec;
@@ -32,7 +33,10 @@ enum Commands {
     /// Create ~/.ctx and detect harnesses
     Init,
     /// Show today's context efficiency
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Check binary, store, hooks, MCP
     Doctor,
     /// Install hooks + MCP for a harness
@@ -95,6 +99,20 @@ enum Commands {
     /// Resume virtualization
     #[command(visible_alias = "on")]
     Resume,
+    /// Open the local dashboard (today's avoided tokens)
+    App {
+        #[arg(long, default_value_t = 8741)]
+        port: u16,
+        /// Do not open a browser
+        #[arg(long)]
+        no_open: bool,
+        /// Start the dashboard at login (macOS LaunchAgent / systemd user)
+        #[arg(long)]
+        install_service: bool,
+        /// Remove the login dashboard
+        #[arg(long)]
+        uninstall_service: bool,
+    },
     /// Serve the CTX MCP (stdio)
     Mcp,
 }
@@ -122,7 +140,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         None => print_home(),
         Some(Commands::Init) => setup::init(),
-        Some(Commands::Status) => status::run(),
+        Some(Commands::Status { json }) => status::run(json),
         Some(Commands::Doctor) => doctor::run(),
         Some(Commands::Setup { target }) => setup::setup(&target),
         Some(Commands::Exec {
@@ -218,6 +236,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Demo) => demo::run(),
         Some(Commands::Pause) => status::set_enabled(false),
         Some(Commands::Resume) => status::set_enabled(true),
+        Some(Commands::App {
+            port,
+            no_open,
+            install_service,
+            uninstall_service,
+        }) => app::run(port, !no_open, install_service, uninstall_service),
         Some(Commands::Mcp) => {
             let rt = Runtime::open_default().context("open CTX store")?;
             ctx_mcp::serve(rt)?;

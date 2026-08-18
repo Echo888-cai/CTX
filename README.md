@@ -36,20 +36,29 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-Rust 1.80+. From this repo:
+One line. Rust is installed if you don't have it.
 
 ```bash
-cargo install --path apps/cli
-ctx init
-ctx setup all    # Claude Code + Cursor
+curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
 Then:
 
 ```bash
-ctx demo         # see a page fault
-ctx inspect      # HOT / WARM / COLD + mapped pages
-ctx why          # why those tokens stayed out
+ctx app                 # dashboard — today's tokens kept out of the model
+ctx app --install-service   # optional: start it at login
+```
+
+The big number is **avoided tokens**. Raw context stayed on disk. `ctx status` is the same data in the terminal.
+
+From this repo:
+
+```bash
+bash install.sh
+# or
+cargo install --path apps/cli --locked --force
+ctx init
+ctx setup all    # Claude Code + Cursor
 ```
 
 ## What the model sees
@@ -115,7 +124,9 @@ We do not invent dollar savings. Subscriptions and list prices make that a lie. 
 
 ## Out of scope
 
-Cloud sync. Team dashboards. Model routing. SaaS. A desktop app.
+Cloud sync. Team SaaS. Model routing. Extra API tokens. An Electron/Tauri shell.
+
+The local dashboard (`ctx app`) is just this machine's numbers on `127.0.0.1`.
 
 Small, local, reversible.
 

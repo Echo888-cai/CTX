@@ -78,4 +78,4 @@ Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are den
 
 ## Non-goals
 
-Cloud sync, team dashboards, model routing, SaaS billing, desktop, extra API tokens. The moat is virtual-memory semantics, not a feature list.
+Cloud sync, team SaaS, model routing, extra API tokens, an Electron/Tauri shell. `ctx app` is a localhost page for today's avoided tokens — not a cloud dashboard. The moat is virtual-memory semantics, not a feature list.

@@ -9,3 +9,4 @@ description = "Context efficiency metrics — avoided tokens, never invented dol
 [dependencies]
 ctx-pager.workspace = true
 ctx-store.workspace = true
+serde.workspace = true

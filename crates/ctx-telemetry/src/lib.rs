@@ -5,8 +5,9 @@
 
 use ctx_pager::{start_of_today, start_of_week};
 use ctx_store::{Store, TokenTotals};
+use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub today: TokenTotals,
     pub week: TokenTotals,

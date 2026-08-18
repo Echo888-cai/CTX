@@ -447,6 +447,10 @@ fn session_start(
     value: &Value,
     harness: Harness,
 ) -> anyhow::Result<HookResponse> {
+    let mut metadata = json!({ "cwd": value.get("cwd") });
+    if let Some(model) = hook_model(value) {
+        insert_meta(&mut metadata, "model", model);
+    }
     let event = CtxEvent {
         event: EventKind::SessionStart,
         session: session_id(value),
@@ -454,7 +458,7 @@ fn session_start(
         tool: None,
         payload: String::new(),
         task_context: None,
-        metadata: json!({ "cwd": value.get("cwd") }),
+        metadata,
     };
     let result = runtime.ingest(event)?;
     let stdout = match harness {
@@ -470,6 +474,14 @@ fn session_start(
         stdout: stdout.to_string(),
         deny: false,
     })
+}
+
+fn hook_model(value: &Value) -> Option<&str> {
+    ["model", "model_id", "modelName"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
 }
 
 fn session_end(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Result<HookResponse> {
@@ -650,6 +662,74 @@ mod tests {
             "{}",
             resp.stdout
         );
+    }
+
+    #[test]
+    fn session_start_attributes_observations_to_the_reported_model() {
+        let (_dir, runtime) = rt();
+        handle_hook(
+            &runtime,
+            r#"{"hook_event_name":"SessionStart","session_id":"model-session","transcript_path":"/tmp/t","model":"claude-sonnet-4-6"}"#,
+        );
+        runtime
+            .ingest(ctx_protocol::CtxEvent::tool_output(
+                "model-session",
+                ctx_protocol::Harness::ClaudeCode,
+                ctx_protocol::ToolRef::new("Bash"),
+                fail_log(),
+            ))
+            .unwrap();
+
+        let rows = runtime.store.dashboard_models(0).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn session_start_without_model_is_reported_as_unknown() {
+        let (_dir, runtime) = rt();
+        handle_hook(
+            &runtime,
+            r#"{"hook_event_name":"sessionStart","conversation_id":"cursor-session","cursor_version":"1"}"#,
+        );
+        runtime
+            .ingest(ctx_protocol::CtxEvent::tool_output(
+                "cursor-session",
+                ctx_protocol::Harness::Cursor,
+                ctx_protocol::ToolRef::new("Bash"),
+                fail_log(),
+            ))
+            .unwrap();
+
+        let rows = runtime.store.dashboard_models(0).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, "__unknown__");
+        assert_eq!(rows[0].source_harnesses, vec!["cursor"]);
+    }
+
+    #[test]
+    fn a_later_session_start_can_fill_a_missing_model() {
+        let (_dir, runtime) = rt();
+        handle_hook(
+            &runtime,
+            r#"{"hook_event_name":"SessionStart","session_id":"resumed","transcript_path":"/tmp/t"}"#,
+        );
+        handle_hook(
+            &runtime,
+            r#"{"hook_event_name":"SessionStart","session_id":"resumed","transcript_path":"/tmp/t","model":"claude-opus-4-1"}"#,
+        );
+        runtime
+            .ingest(ctx_protocol::CtxEvent::tool_output(
+                "resumed",
+                ctx_protocol::Harness::ClaudeCode,
+                ctx_protocol::ToolRef::new("Bash"),
+                fail_log(),
+            ))
+            .unwrap();
+
+        let rows = runtime.store.dashboard_models(0).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, "claude-opus-4-1");
     }
 
     #[test]

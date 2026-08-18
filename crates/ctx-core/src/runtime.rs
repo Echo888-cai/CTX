@@ -65,10 +65,11 @@ impl Runtime {
     }
 
     pub fn ingest(&self, event: CtxEvent) -> ctx_store::Result<IngestResult> {
-        self.store.ensure_session(
+        self.store.ensure_session_with_model(
             &event.session,
             event.harness.as_str(),
             event.metadata.get("cwd").and_then(|v| v.as_str()),
+            event.metadata.get("model").and_then(|v| v.as_str()),
         )?;
 
         match event.event {

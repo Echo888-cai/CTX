@@ -36,20 +36,29 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-Rust 1.80+。在本仓库：
+一行。没有 Rust 会先装 rustup。
 
 ```bash
-cargo install --path apps/cli
-ctx init
-ctx setup all    # Claude Code + Cursor
+curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
 然后：
 
 ```bash
-ctx demo         # 看一次缺页
-ctx inspect      # HOT / WARM / COLD + 映射页
-ctx why          # 这些 token 为什么没进模型
+ctx app                 # 仪表盘：今天挡在模型外面的 token
+ctx app --install-service   # 可选：登录后自动开
+```
+
+最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
+
+在本仓库：
+
+```bash
+bash install.sh
+# 或
+cargo install --path apps/cli --locked --force
+ctx init
+ctx setup all    # Claude Code + Cursor
 ```
 
 ## 模型看到什么
@@ -115,7 +124,9 @@ ctx setup cursor
 
 ## 不做
 
-云同步、团队看板、模型路由、SaaS、桌面端。
+云同步、团队 SaaS、模型路由、额外 API token、Electron/Tauri 壳。
+
+本地仪表盘（`ctx app`）只是这台机器上的数字，绑在 `127.0.0.1`。
 
 小、本地、可逆。
 

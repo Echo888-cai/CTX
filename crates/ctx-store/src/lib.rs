@@ -6,6 +6,7 @@
 mod blob;
 mod db;
 mod error;
+mod metrics;
 mod paths;
 
 pub use blob::{blake3_hex, normalize_hash};
@@ -16,6 +17,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use rusqlite::{params, Connection};
+use serde::Serialize;
 
 use ctx_protocol::{CtxUri, Frame};
 
@@ -299,11 +301,28 @@ impl Store {
     }
 
     pub fn ensure_session(&self, id: &str, harness: &str, cwd: Option<&str>) -> Result<()> {
+        self.ensure_session_with_model(id, harness, cwd, None)
+    }
+
+    pub fn ensure_session_with_model(
+        &self,
+        id: &str,
+        harness: &str,
+        cwd: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
         let conn = self.lock();
         conn.execute(
-            "INSERT OR IGNORE INTO sessions (id, harness, started_at, cwd)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![id, harness, now_secs(), cwd],
+            "INSERT INTO sessions (id, harness, started_at, cwd, model)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET
+                harness = excluded.harness,
+                cwd = COALESCE(excluded.cwd, sessions.cwd),
+                model = CASE
+                    WHEN sessions.model = '' AND excluded.model <> '' THEN excluded.model
+                    ELSE sessions.model
+                END",
+            params![id, harness, now_secs(), cwd, model.unwrap_or("")],
         )?;
         Ok(())
     }
@@ -814,7 +833,7 @@ impl Store {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct TokenTotals {
     pub raw: u64,
     pub delivered: u64,
@@ -1105,5 +1124,56 @@ mod tests {
         store.ensure_session("s1", "cursor", None).unwrap();
         store.set_session_task("s1", "auth login").unwrap();
         assert_eq!(store.session_task("s1").unwrap(), "auth login");
+    }
+
+    #[test]
+    fn schema_v6_migrates_model_without_losing_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("ctx.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    harness TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    ended_at INTEGER,
+                    cwd TEXT,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    task TEXT NOT NULL DEFAULT '',
+                    remap INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO meta (key, value) VALUES ('schema_version', '6');
+                INSERT INTO sessions (id, harness, started_at, cwd)
+                VALUES ('legacy-session', 'cursor', 123, '/tmp/project');
+                "#,
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(CtxPaths::from_root(root)).unwrap();
+        drop(store);
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let model: String = conn
+            .query_row(
+                "SELECT model FROM sessions WHERE id = 'legacy-session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, "");
+        assert_eq!(version, "7");
     }
 }

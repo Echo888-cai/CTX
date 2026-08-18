@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -31,7 +31,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             cwd TEXT,
             metadata TEXT NOT NULL DEFAULT '{}',
             task TEXT NOT NULL DEFAULT '',
-            remap INTEGER NOT NULL DEFAULT 0
+            remap INTEGER NOT NULL DEFAULT 0,
+            model TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS blobs (
@@ -172,6 +173,13 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if current < 6 {
         let _ = conn.execute(
             "ALTER TABLE sessions ADD COLUMN remap INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+
+    if current < 7 {
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''",
             [],
         );
     }
