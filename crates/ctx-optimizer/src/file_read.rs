@@ -1,5 +1,7 @@
+use crate::compact::compact_block;
 use crate::pipeline::{OptimizeInput, OptimizeOutput, Optimizer};
-use crate::symbols::symbol_label;
+use crate::symbols::{collect_symbol_spans, matching_spans, slice_span, SymbolSpan};
+use crate::tokens::estimate_tokens;
 
 pub struct ReadGuard;
 
@@ -25,13 +27,56 @@ impl Optimizer for ReadGuard {
             .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let outline = outline_source(path, input.payload);
-        let out = OptimizeOutput::reduced("file-read", outline);
+        let task = task_tokens(input.metadata);
+        let mut outline = outline_working_set(path, input.payload, &task);
+        if let Some(window) = requested_window(input) {
+            outline = format!("{window}\n\n{outline}");
+        }
+        let out = OptimizeOutput::reduced_terminal("file-read", outline);
         if raw_tokens.saturating_sub(out.delivered_tokens) < 80 {
             return None;
         }
         Some(out)
     }
+}
+
+fn task_tokens(metadata: &serde_json::Value) -> Vec<String> {
+    metadata
+        .get("task")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .split_whitespace()
+        .filter(|t| t.len() >= 2)
+        .map(|t| t.to_string())
+        .collect()
+}
+
+fn requested_window(input: &OptimizeInput<'_>) -> Option<String> {
+    let offset = input
+        .metadata
+        .get("offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let limit = input.metadata.get("limit").and_then(|v| v.as_u64())?;
+    if limit == 0 {
+        return None;
+    }
+    let lines: Vec<&str> = input.payload.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let start = if offset <= 1 {
+        0
+    } else {
+        (offset as usize - 1).min(lines.len())
+    };
+    let end = (start + limit as usize).min(lines.len());
+    if end <= start {
+        return None;
+    }
+    let mut out = format!("L{}–{}\n", start + 1, end);
+    out.push_str(&lines[start..end].join("\n"));
+    Some(out)
 }
 
 fn unchanged_stub(input: &OptimizeInput<'_>) -> OptimizeOutput {
@@ -66,62 +111,81 @@ fn unchanged_stub(input: &OptimizeInput<'_>) -> OptimizeOutput {
 }
 
 pub fn outline_source(path: &str, source: &str) -> String {
+    outline_working_set(path, source, &[])
+}
+
+/// Signature table. Task-matching function bodies stay resident.
+pub fn outline_working_set(path: &str, source: &str, task: &[String]) -> String {
+    let spans = collect_symbol_spans(source);
     let total_lines = source.lines().count();
-    let mut sigs = Vec::new();
-    for (i, line) in source.lines().enumerate() {
-        let t = line.trim();
-        if let Some(name) = symbol_label(t) {
-            sigs.push(format!("L{} {name}", i + 1));
-        }
-    }
     let mut out = format!("{path}  {total_lines} lines\n");
-    let substance: Vec<&str> = source
-        .lines()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty()
-                && !t.starts_with("use ")
-                && !t.starts_with("import ")
-                && !t.starts_with("from ")
-                && !t.starts_with('#')
-                && !t.starts_with("//")
-                && !t.starts_with("/*")
-                && t != "{"
-                && t != "}"
-                && symbol_label(t).is_none()
-        })
-        .take(8)
-        .collect();
-    if !substance.is_empty() {
+    if !spans.is_empty() {
         out.push('\n');
-        out.push_str(&substance.join("\n"));
-        out.push('\n');
-    }
-    if !sigs.is_empty() {
-        out.push('\n');
-        for s in sigs.iter().take(40) {
-            out.push_str(s);
+        for s in spans.iter().take(48) {
+            out.push_str(&format_sig(s));
             out.push('\n');
         }
     }
-    out.push_str("ctx_read path q=\n");
+    append_task_bodies(&mut out, source, &spans, task);
+    let q = spans.first().map(|s| s.name.as_str()).unwrap_or("");
+    out.push_str(&format!("ctx_read path q={q}\n"));
     out
 }
 
-pub fn extract_regions(source: &str) -> Vec<String> {
-    let mut regions = Vec::new();
-    for (i, line) in source.lines().enumerate() {
-        let t = line.trim();
-        if let Some(name) = symbol_label(t) {
-            regions.push(format!("L{} {name}", i + 1));
+fn format_sig(s: &SymbolSpan) -> String {
+    let sig = s.label();
+    if s.start_line == s.end_line {
+        format!("{sig}  L{}", s.start_line)
+    } else {
+        format!("{sig}  L{}–{}", s.start_line, s.end_line)
+    }
+}
+
+fn append_task_bodies(out: &mut String, source: &str, spans: &[SymbolSpan], task: &[String]) {
+    if task.is_empty() {
+        return;
+    }
+    let hits = matching_spans(spans, task);
+    if hits.is_empty() {
+        return;
+    }
+    let mut extra = String::new();
+    for s in hits.iter().take(3) {
+        let body = slice_span(source, s.start_line, s.end_line);
+        let compact = if body.lines().count() > 40 {
+            compact_block(&body, 32)
+        } else {
+            body
+        };
+        extra.push('\n');
+        extra.push_str(&format!("#{} L{}–{}\n", s.name, s.start_line, s.end_line));
+        extra.push_str(&compact);
+        extra.push('\n');
+        if estimate_tokens(&extra) > 400 {
+            break;
         }
     }
-    regions
+    out.push_str(&extra);
+}
+
+pub fn extract_regions(source: &str) -> Vec<String> {
+    collect_symbol_spans(source)
+        .into_iter()
+        .take(24)
+        .map(|s| {
+            if s.start_line == s.end_line {
+                format!("{}  L{}", s.label(), s.start_line)
+            } else {
+                format!("{}  L{}–{}", s.label(), s.start_line, s.end_line)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::{OptimizeInput, Optimizer};
     use crate::tokens::estimate_tokens;
 
     #[test]
@@ -155,5 +219,29 @@ mod tests {
         assert!(out.text.contains("fn thing_0"), "{}", out.text);
         assert!(!out.text.contains("x + 12"), "{}", out.text);
         assert!(out.delivered_tokens + 80 < input.raw_tokens);
+        assert!(out.terminal);
+    }
+
+    #[test]
+    fn task_keeps_matching_body_resident() {
+        let src = "\
+fn noise() {\n\
+    1\n\
+}\n\
+pub fn login(user: &str) -> i32 {\n\
+    let status = 401;\n\
+    status\n\
+}\n\
+fn other() {\n\
+    2\n\
+}\n";
+        let mut padded = src.to_string();
+        for i in 0..40 {
+            padded.push_str(&format!("fn extra_{i}() {{ {i} }}\n"));
+        }
+        let out = outline_working_set("src/auth.rs", &padded, &["login".into()]);
+        assert!(out.contains("let status = 401"), "{out}");
+        assert!(out.contains("#login"), "{out}");
+        assert!(!out.contains("fn noise() {\n    1"), "{out}");
     }
 }

@@ -93,7 +93,7 @@ Yesterday's Claude session and today's Cursor session share one page table. Page
 
 | Layer | What it does |
 |---|---|
-| Deterministic reduction | Strip ANSI, passing tests, progress bars. Parsers, not a model. |
+| Deterministic reduction | Strip ANSI, passing tests, progress bars, git/npm/rg noise. Parsers, not a model. |
 | Structural virtualization | Bytes go to a content-addressed store. Model gets a handle. |
 | Semantic working set | Map pages by task tokens. Cross-harness. Compact remaps. |
 

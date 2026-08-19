@@ -16,8 +16,14 @@ pub fn is_diagnostic_line(line: &str) -> bool {
         || t.contains("error TS")
         || t.starts_with("FAILED ")
         || t.starts_with("FAIL ")
+        || t.starts_with("FAIL  ")
         || t.starts_with("--- FAIL:")
         || t.starts_with("FAIL\t")
+        || t.starts_with("warning:")
+        || t.starts_with("AssertionError")
+        || t.starts_with("Error: expect")
+        || t.starts_with("× ")
+        || t.starts_with("✖ ")
         || t.starts_with("thread '")
         || t.contains("panicked at")
         || t.starts_with("assertion ")
@@ -229,6 +235,66 @@ pub fn diagnostic_excerpt(text: &str, diag_cap: u32) -> String {
     body
 }
 
+/// Diagnostic-density × task-token ranking under a token budget.
+pub fn diagnostic_ranked(text: &str, task: &[String], max_tokens: u32) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let n = lines.len();
+    if n <= 40 {
+        return text.to_string();
+    }
+    let task_l: Vec<String> = task.iter().map(|t| t.to_ascii_lowercase()).collect();
+    let mut scored: Vec<(i32, usize)> = Vec::with_capacity(n);
+    for (i, line) in lines.iter().enumerate() {
+        let mut s = 0i32;
+        if is_diagnostic_line(line) {
+            s += 24;
+        }
+        let l = line.to_ascii_lowercase();
+        for t in &task_l {
+            if !t.is_empty() && l.contains(t) {
+                s += 8;
+            }
+        }
+        if i < 8 || i + 8 >= n {
+            s += 2;
+        }
+        if line.contains("^^^") || line.contains("-----") {
+            s += 6;
+        }
+        scored.push((-s, i));
+    }
+    scored.sort_unstable();
+    let budget = max_tokens.max(80);
+    let mut keep = std::collections::BTreeSet::new();
+    let mut used = 0u32;
+    for (neg, i) in &scored {
+        if *neg > -24 {
+            continue;
+        }
+        let cost = crate::tokens::estimate_tokens(lines[*i]).saturating_add(1);
+        if used.saturating_add(cost) > budget && !keep.is_empty() {
+            continue;
+        }
+        keep.insert(*i);
+        used = used.saturating_add(cost);
+    }
+    for (neg, i) in &scored {
+        if keep.contains(i) {
+            continue;
+        }
+        if *neg == 0 && !keep.is_empty() {
+            continue;
+        }
+        let cost = crate::tokens::estimate_tokens(lines[*i]).saturating_add(1);
+        if used.saturating_add(cost) > budget {
+            continue;
+        }
+        keep.insert(*i);
+        used = used.saturating_add(cost);
+    }
+    format!("{}/{} lines\n\n{}", keep.len(), n, join_kept(&lines, &keep))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +323,18 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
     fn short_block_is_identity() {
         let raw = "left: 401\nright: 200";
         assert_eq!(compact_block(raw, 16), raw);
+    }
+
+    #[test]
+    fn ranked_keeps_task_line() {
+        let mut raw = String::from("padding start\n");
+        for i in 0..60 {
+            raw.push_str(&format!("noise line {i} xxxxx\n"));
+        }
+        raw.push_str("oauth redirect_uri mismatch\n");
+        raw.push_str("padding end\n");
+        let out = diagnostic_ranked(&raw, &["oauth".into()], 180);
+        assert!(out.contains("oauth"), "{out}");
+        assert!(!out.contains("noise line 20"), "{out}");
     }
 }

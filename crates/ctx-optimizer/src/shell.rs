@@ -13,8 +13,9 @@ impl Optimizer for ShellGuard {
         if input.raw_tokens < 80 {
             return None;
         }
-        let text = with_exec_header(input, reduce_shell(input.payload));
-        let out = OptimizeOutput::reduced("shell", text);
+        let command = input.metadata.get("command").and_then(|v| v.as_str());
+        let text = with_exec_header(input, reduce_shell_with(input.payload, command));
+        let out = OptimizeOutput::reduced_terminal("shell", text);
         if out.delivered_tokens + 40 >= input.raw_tokens {
             return None;
         }
@@ -23,18 +24,50 @@ impl Optimizer for ShellGuard {
 }
 
 pub fn reduce_shell(payload: &str) -> String {
+    reduce_shell_with(payload, None)
+}
+
+pub fn reduce_shell_with(payload: &str, command: Option<&str>) -> String {
     let stripped = strip_ansi(payload);
     let cleaned = collapse_noise(&stripped);
-    let kind = detect_kind(&cleaned);
+    let kind = detect_kind(&cleaned, command);
     match kind {
+        ShellKind::GitDiff => Reduced {
+            body: crate::git::reduce_diff(&cleaned),
+        },
+        ShellKind::GitLog => Reduced {
+            body: crate::git::reduce_log(&cleaned),
+        },
+        ShellKind::GitStatus => Reduced {
+            body: crate::git::reduce_status(&cleaned),
+        },
+        ShellKind::Install => Reduced {
+            body: crate::install::reduce(&cleaned, crate::install::InstallKind::Packages),
+        },
+        ShellKind::Tree => Reduced {
+            body: crate::install::reduce(&cleaned, crate::install::InstallKind::Tree),
+        },
+        ShellKind::Docker => Reduced {
+            body: crate::install::reduce(&cleaned, crate::install::InstallKind::Docker),
+        },
+        ShellKind::Bundler => Reduced {
+            body: crate::install::reduce(&cleaned, crate::install::InstallKind::Bundler),
+        },
         ShellKind::CargoTest => reduce_cargo(&cleaned),
         ShellKind::CargoBuild => reduce_cargo_build(&cleaned),
         ShellKind::Nextest => reduce_nextest(&cleaned),
         ShellKind::Pytest => reduce_pytest(&cleaned),
         ShellKind::Jest => reduce_jest(&cleaned),
+        ShellKind::Vitest => reduce_vitest(&cleaned),
         ShellKind::GoTest => reduce_go(&cleaned),
         ShellKind::Tsc => reduce_tsc(&cleaned),
         ShellKind::Eslint => reduce_eslint(&cleaned),
+        ShellKind::Grep => Reduced {
+            body: crate::grep::reduce(&cleaned, crate::grep::SearchKind::Grep),
+        },
+        ShellKind::Listing => Reduced {
+            body: crate::grep::reduce(&cleaned, crate::grep::SearchKind::Listing),
+        },
         ShellKind::Generic => reduce_generic(&cleaned),
     }
     .body
@@ -56,18 +89,45 @@ fn with_exec_header(input: &OptimizeInput<'_>, body: String) -> String {
 
 #[derive(Debug, Clone, Copy)]
 enum ShellKind {
+    GitDiff,
+    GitLog,
+    GitStatus,
+    Install,
+    Tree,
+    Docker,
+    Bundler,
     CargoTest,
     CargoBuild,
     Nextest,
     Pytest,
     Jest,
+    Vitest,
     GoTest,
     Tsc,
     Eslint,
+    Grep,
+    Listing,
     Generic,
 }
 
-fn detect_kind(text: &str) -> ShellKind {
+fn detect_kind(text: &str, command: Option<&str>) -> ShellKind {
+    match crate::git::detect_git(text, command) {
+        Some(crate::git::GitKind::Diff) => return ShellKind::GitDiff,
+        Some(crate::git::GitKind::Log) => return ShellKind::GitLog,
+        Some(crate::git::GitKind::Status) => return ShellKind::GitStatus,
+        None => {}
+    }
+    if let Some(kind) = crate::install::detect(text, command) {
+        return match kind {
+            crate::install::InstallKind::Packages => ShellKind::Install,
+            crate::install::InstallKind::Tree => ShellKind::Tree,
+            crate::install::InstallKind::Docker => ShellKind::Docker,
+            crate::install::InstallKind::Bundler => ShellKind::Bundler,
+        };
+    }
+    if looks_like_vitest(text, command) {
+        return ShellKind::Vitest;
+    }
     if text.contains("error[E")
         || text.contains("could not compile")
         || text.contains("error: aborting due to")
@@ -107,7 +167,29 @@ fn detect_kind(text: &str) -> ShellKind {
     if looks_like_cargo_status(text) {
         return ShellKind::CargoBuild;
     }
+    if text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("warning:"))
+        .count()
+        >= 3
+    {
+        return ShellKind::CargoBuild;
+    }
+    if let Some(kind) = crate::grep::detect(text, command) {
+        return match kind {
+            crate::grep::SearchKind::Grep => ShellKind::Grep,
+            crate::grep::SearchKind::Listing => ShellKind::Listing,
+        };
+    }
     ShellKind::Generic
+}
+
+fn looks_like_vitest(text: &str, command: Option<&str>) -> bool {
+    if command.is_some_and(|c| c.to_ascii_lowercase().contains("vitest")) {
+        return true;
+    }
+    text.contains("Test Files")
+        && (text.contains(" FAIL  ") || text.contains(" ✓ ") || text.contains(" × "))
 }
 
 fn looks_like_eslint(text: &str) -> bool {
@@ -754,9 +836,62 @@ fn reduce_eslint(text: &str) -> Reduced {
 }
 
 fn reduce_generic(text: &str) -> Reduced {
+    let raw = crate::tokens::estimate_tokens(text);
     Reduced {
-        body: crate::compact::diagnostic_excerpt(text, 40),
+        body: crate::compact::diagnostic_ranked(text, &[], crate::budget::cap(raw)),
     }
+}
+
+fn reduce_vitest(text: &str) -> Reduced {
+    let mut summary = Vec::new();
+    let mut fails = Vec::new();
+    let mut block = String::new();
+    let mut in_fail = false;
+    for line in text.lines() {
+        let t = line.trim_end();
+        if t.contains("Test Files") || t.contains("Tests ") || t.starts_with("Duration") {
+            summary.push(t.trim().to_string());
+        }
+        if t.trim_start().starts_with("FAIL ") || t.trim_start().starts_with("FAIL  ") {
+            if in_fail && !block.is_empty() {
+                fails.push(std::mem::take(&mut block));
+            }
+            in_fail = true;
+            block = format!("{t}\n");
+            continue;
+        }
+        if in_fail {
+            if t.trim_start().starts_with("PASS ")
+                || t.trim_start().starts_with("FAIL ")
+                || t.contains("Test Files")
+            {
+                fails.push(std::mem::take(&mut block));
+                in_fail = t.trim_start().starts_with("FAIL");
+                if in_fail {
+                    block = format!("{t}\n");
+                }
+            } else if block.lines().count() < 24 {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+    }
+    if in_fail && !block.is_empty() {
+        fails.push(block);
+    }
+    let mut body = String::new();
+    for s in &summary {
+        body.push_str(s);
+        body.push('\n');
+    }
+    if !fails.is_empty() {
+        body.push('\n');
+        for f in fails.iter().take(8) {
+            body.push_str(&crate::compact::compact_block(f.trim(), 16));
+            body.push_str("\n\n");
+        }
+    }
+    Reduced { body }
 }
 
 #[cfg(test)]
@@ -939,5 +1074,47 @@ test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(out.contains("src/auth.rs:82"), "{out}");
         assert!(!out.contains("rust_begin_unwind"), "{out}");
         assert!(!out.contains("RUST_BACKTRACE"), "{out}");
+    }
+
+    #[test]
+    fn npm_install_drops_registry_fetch() {
+        let mut raw = String::new();
+        for i in 0..30 {
+            raw.push_str(&format!(
+                "npm http fetch GET 200 https://registry.npmjs.org/pkg{i} 12ms\n"
+            ));
+        }
+        raw.push_str("added 342 packages, and audited 343 packages in 12s\n");
+        let out = reduce_shell_with(&raw, Some("npm install"));
+        assert!(out.contains("added 342"), "{out}");
+        assert!(!out.contains("registry.npmjs.org/pkg12"), "{out}");
+    }
+
+    #[test]
+    fn vitest_keeps_fail_name() {
+        let mut raw = String::from(" RUN  v1.6.0\n");
+        for i in 0..40 {
+            raw.push_str(&format!(" ✓ src/ok{i}.test.ts (1)\n"));
+        }
+        raw.push_str(" FAIL  src/auth.test.ts > login > returns 200\n");
+        raw.push_str("AssertionError: expected 401 to be 200\n");
+        raw.push_str(" Test Files  1 failed | 40 passed\n");
+        raw.push_str("      Tests  1 failed | 40 passed\n");
+        let out = reduce_shell_with(&raw, Some("npx vitest run"));
+        assert!(out.contains("401") || out.contains("auth.test"), "{out}");
+        assert!(out.contains("failed"), "{out}");
+        assert!(!out.contains("src/ok12.test.ts"), "{out}");
+    }
+
+    #[test]
+    fn rg_groups_hits_by_file() {
+        let mut raw = String::new();
+        for i in 0..40 {
+            raw.push_str(&format!("src/auth.rs:{i}: let status = {i}\n"));
+        }
+        let out = reduce_shell_with(&raw, Some("rg status src"));
+        assert!(out.contains("src/auth.rs"), "{out}");
+        assert!(out.contains("matches"), "{out}");
+        assert!(!out.contains("let status = 20"), "{out}");
     }
 }

@@ -54,7 +54,7 @@ A page is not a blob. Ingest builds a **frame table** (failed tests, rustc error
 
 Clock totals stay: **HOT** = referenced + recent; **WARM** = referenced or last 24h; **COLD** = old unreferenced. Referenced means error/fail, nonzero shell exit, or a path in `git diff`.
 
-The **mapped page list** is ranked by task tokens (prompt, command, path, frame names). Overlap beats recency. A COLD page from yesterday's Claude session can map into today's Cursor session — same store.
+The **mapped page list** is ranked by task tokens (prompt, command, path, frame names), then IDF (rare tokens beat common ones) and fail/error frames. Overlap beats recency. Compiler spans prefetch `ctx://file/…#fn` without inlining the file. `rg`/`find` dumps fold to per-file samples. `ctx_fetch` with a line number opens the enclosing function. A COLD page from yesterday's Claude session can map into today's Cursor session — same store.
 
 SessionStart greets with a tiny mapped set. Compact cannot inject Claude `additionalContext` (schema); PreCompact prints a plain-text keep list, and the next UserPromptSubmit remaps. Prompts contribute tokens only — they are never stored as blobs.
 

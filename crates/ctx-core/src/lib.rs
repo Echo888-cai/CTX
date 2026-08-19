@@ -12,7 +12,7 @@ pub use format::{
     ensure_exec_header, render_virtualized, render_virtualized_space, session_banner,
 };
 pub use hooks::{handle_hook, HookResponse};
-pub use pagein::{bounded_preview, page_in, FULL_PAGE_TOKENS};
+pub use pagein::{bounded_preview, page_in, page_in_with_frames, FULL_PAGE_TOKENS};
 pub use runtime::{IngestResult, Runtime};
 pub use wrap::{
     is_already_wrapped, resolve_ctx_bin, rewrite_shell_command, single_quote, wrap_shell_command,

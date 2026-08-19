@@ -1,6 +1,6 @@
 use ctx_optimizer::{
-    cow_working_set, estimate_tokens, extract_frames, extract_maps, extract_regions,
-    DuplicateGuard, OptimizeInput, Pipeline,
+    cow_working_set, estimate_tokens, extract_frames, extract_map_hits, extract_regions,
+    symbol_at_line, DuplicateGuard, MapHit, OptimizeInput, Pipeline,
 };
 use ctx_pager::{extract_task, merge_tokens, parse_task, WorkingSet};
 use ctx_protocol::{CtxEvent, CtxUri, EventKind, Frame, ToolKind};
@@ -8,7 +8,9 @@ use ctx_store::{blake3_hex, normalize_hash, FileReadRecord, NewObservation, Stor
 
 use crate::config::Config;
 use crate::format::render_virtualized_space;
-use crate::pagein::{bounded_preview_frames, first_snippet, frame_slice, match_score, page_in};
+use crate::pagein::{
+    bounded_preview_frames, first_snippet, frame_slice, match_score, page_in_with_frames,
+};
 
 pub struct Runtime {
     pub store: Store,
@@ -157,11 +159,28 @@ impl Runtime {
         if !task.is_empty() {
             remember_tokens(&self.store, &event.session, &task)?;
         }
-        let maps = self.mapped_pages(&extract_maps(&event.payload))?;
+        let cwd = event.metadata.get("cwd").and_then(|v| v.as_str());
+        let maps = self.mapped_pages(&extract_map_hits(&event.payload), cwd)?;
 
         let mut metadata = event.metadata.clone();
         if let Some(obj) = metadata.as_object_mut() {
             obj.insert("uri".into(), serde_json::Value::String(uri.to_string()));
+            // Inline bodies from the prompt/session task, never from this page's own symbols.
+            let inline = event
+                .task_context
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    self.store
+                        .session_task(&event.session)
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                });
+            if let Some(task) = inline {
+                obj.insert("task".into(), serde_json::Value::String(task));
+            }
         }
 
         if kind == ToolKind::File {
@@ -395,7 +414,12 @@ impl Runtime {
                         frame.end_line,
                     ))
                 } else {
-                    Ok(page_in(&raw, name))
+                    let frames = self.store.frames_for(&key).unwrap_or_default();
+                    let listed: Vec<(String, u32, u32)> = frames
+                        .into_iter()
+                        .map(|f| (f.name, f.start_line, f.end_line))
+                        .collect();
+                    Ok(page_in_with_frames(&raw, name, &listed))
                 }
             }
             None => {
@@ -414,7 +438,14 @@ impl Runtime {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         match query.map(str::trim) {
             Some("*" | "full") => Ok(text),
-            Some(q) if !q.is_empty() => Ok(page_in(&text, q)),
+            Some(q) if !q.is_empty() => {
+                let spans = ctx_optimizer::collect_symbol_spans(&text);
+                let frames: Vec<(String, u32, u32)> = spans
+                    .into_iter()
+                    .map(|s| (s.name, s.start_line, s.end_line))
+                    .collect();
+                Ok(page_in_with_frames(&text, q, &frames))
+            }
             _ => {
                 let tokens = estimate_tokens(&text);
                 if tokens > self.config.large_file_tokens {
@@ -601,19 +632,76 @@ impl Runtime {
         Ok(cow_working_set(&prev, &prev_uri, payload).map(|text| (text, prev_uri)))
     }
 
-    fn mapped_pages(&self, paths: &[String]) -> ctx_store::Result<Vec<String>> {
+    fn mapped_pages(&self, hits: &[MapHit], cwd: Option<&str>) -> ctx_store::Result<Vec<String>> {
         let mut out = Vec::new();
-        for path in paths {
-            if let Some(prev) = self.store.get_file_read(path)? {
+        for hit in hits {
+            let symbol = self.symbol_for_hit(hit, cwd)?;
+            let loc = match (hit.line, symbol.as_deref()) {
+                (Some(n), Some(s)) => format!("{}:{n}#{s}", hit.path),
+                (Some(n), None) => format!("{}:{n}", hit.path),
+                (None, Some(s)) => format!("{}#{s}", hit.path),
+                (None, None) => hit.path.clone(),
+            };
+            if let Some(prev) = self.store.get_file_read(&hit.path)? {
                 if let Some(uri) = prev.last_uri {
-                    out.push(format!("{uri}  {path}"));
+                    if let Some(s) = symbol {
+                        out.push(format!("{uri}#{s}  {loc}"));
+                    } else {
+                        out.push(format!("{uri}  {loc}"));
+                    }
                     continue;
                 }
             }
-            out.push(format!("{path}  (ctx_read)"));
+            out.push(format!("{loc}  (ctx_read)"));
         }
         Ok(out)
     }
+
+    fn symbol_for_hit(&self, hit: &MapHit, cwd: Option<&str>) -> ctx_store::Result<Option<String>> {
+        let line = match hit.line {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        if let Some(prev) = self.store.get_file_read(&hit.path)? {
+            if let Some(uri) = &prev.last_uri {
+                if let Ok(frames) = self.store.frames_for(uri) {
+                    if let Some(name) = enclosing_symbol(&frames, line) {
+                        return Ok(Some(name));
+                    }
+                }
+            }
+            if let Ok(bytes) = self.store.get_bytes(&prev.content_hash) {
+                let src = String::from_utf8_lossy(&bytes);
+                return Ok(symbol_at_line(&src, line));
+            }
+        }
+        Ok(symbol_from_disk(cwd, &hit.path, line))
+    }
+}
+
+fn enclosing_symbol(frames: &[Frame], line: u32) -> Option<String> {
+    frames
+        .iter()
+        .filter(|f| f.start_line <= line && line <= f.end_line)
+        .min_by_key(|f| f.end_line.saturating_sub(f.start_line))
+        .map(|f| f.name.clone())
+}
+
+fn symbol_from_disk(cwd: Option<&str>, path: &str, line: u32) -> Option<String> {
+    let p = std::path::Path::new(path);
+    let full = if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Some(c) = cwd {
+        std::path::Path::new(c).join(p)
+    } else {
+        p.to_path_buf()
+    };
+    let meta = std::fs::metadata(&full).ok()?;
+    if meta.len() > 2_000_000 {
+        return None;
+    }
+    let src = std::fs::read_to_string(full).ok()?;
+    symbol_at_line(&src, line)
 }
 
 fn remember_task(store: &Store, event: &CtxEvent) -> ctx_store::Result<()> {
@@ -878,5 +966,81 @@ mod tests {
         assert!(!result.delivered.contains("x + 12"), "{}", result.delivered);
         assert!(result.delivered.contains("ctx://"), "{}", result.delivered);
         assert!(result.delivered_tokens + 80 < result.raw_tokens);
+    }
+
+    #[test]
+    fn fetch_named_file_frame_returns_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let mut padded = String::from("use std::io;\n\n");
+        padded.push_str("fn noise() {\n    1\n}\n");
+        padded
+            .push_str("pub fn login(user: &str) -> i32 {\n    let status = 401;\n    status\n}\n");
+        padded.push_str("fn tail() { 2 }\n");
+        for i in 0..40 {
+            padded.push_str(&format!("fn extra_{i}() {{ {i} }}\n"));
+        }
+        let event = CtxEvent {
+            event: EventKind::FileRead,
+            session: "s-fetch".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Read")),
+            payload: padded,
+            task_context: Some("fix login".into()),
+            metadata: serde_json::json!({"path": "src/auth.rs"}),
+        };
+        let result = rt.ingest(event).unwrap();
+        let uri = result.uri.expect("uri");
+        let page = rt.fetch(&format!("{uri}#login"), None).unwrap();
+        assert!(page.contains("let status = 401"), "{page}");
+        assert!(page.contains("login"), "{page}");
+        assert!(!page.contains("fn extra_12"), "{page}");
+    }
+
+    #[test]
+    fn compiler_span_prefetches_file_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let mut src = String::from("fn noise() { 1 }\n");
+        src.push_str("pub fn login(x: i32) -> i32 {\n    401\n}\n");
+        src.push_str("fn tail() { 2 }\n");
+        for i in 0..40 {
+            src.push_str(&format!("fn extra_{i}() {{ {i} }}\n"));
+        }
+        let read = CtxEvent {
+            event: EventKind::FileRead,
+            session: "s-map".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Read")),
+            payload: src,
+            task_context: None,
+            metadata: serde_json::json!({"path": "src/auth.rs"}),
+        };
+        let file = rt.ingest(read).unwrap();
+        let file_uri = file.uri.expect("file uri");
+        let compile = CtxEvent {
+            event: EventKind::ToolOutput,
+            session: "s-map".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Bash")),
+            payload: {
+                let mut p = String::from("error[E0308]: mismatched types\n  --> src/auth.rs:3:5\n");
+                for i in 0..80 {
+                    p.push_str(&format!("Compiling crate{i} v1.0.0\n"));
+                }
+                p
+            },
+            task_context: None,
+            metadata: serde_json::json!({"command": "cargo build", "exit_code": 101}),
+        };
+        let out = rt.ingest(compile).unwrap();
+        assert!(
+            out.delivered.contains(&format!("{file_uri}#login"))
+                || (out.delivered.contains("src/auth.rs") && out.delivered.contains("#login")),
+            "{}",
+            out.delivered
+        );
     }
 }

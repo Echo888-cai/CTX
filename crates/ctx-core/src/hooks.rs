@@ -184,6 +184,14 @@ fn post_tool_use(
     if let Some(cmd) = extract_command(value) {
         insert_meta(&mut metadata, "command", cmd);
     }
+    if let Some(input) = value.get("tool_input") {
+        if let Some(n) = input.get("offset").and_then(ctx_protocol::json_i64) {
+            insert_meta(&mut metadata, "offset", n);
+        }
+        if let Some(n) = input.get("limit").and_then(ctx_protocol::json_i64) {
+            insert_meta(&mut metadata, "limit", n);
+        }
+    }
 
     let event = CtxEvent {
         event: EventKind::from_hook_name(event_name),

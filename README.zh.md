@@ -93,7 +93,7 @@ ctx://shell/9ba72f3c#auth::login  18241→412
 
 | 层 | 做什么 |
 |---|---|
-| 确定性削减 | 剥 ANSI、通过的测试、进度条。解析器，不是模型。 |
+| 确定性削减 | 剥 ANSI、通过的测试、进度条、git/npm/rg 噪音。解析器，不是模型。 |
 | 结构虚拟化 | 字节进内容寻址 store。模型拿到 handle。 |
 | 语义 working set | 按任务 token 映射页。跨 harness。Compact 后重新映射。 |
 

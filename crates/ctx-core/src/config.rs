@@ -19,7 +19,7 @@ fn default_threshold() -> u32 {
     200
 }
 fn default_large_file() -> u32 {
-    1_200
+    400
 }
 
 impl Default for Config {

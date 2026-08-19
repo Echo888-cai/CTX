@@ -380,6 +380,8 @@ fn select_mapped(
         }
     }
     let git = git_paths_for(obs);
+    let n_docs = pages.len().max(1) as u32;
+    let df = query_df(pages, query);
     let mut scored: Vec<(u32, i64, RecentPage)> = Vec::new();
     for page in pages {
         let (layer, tokens) = if let Some(o) = latest.get(&page.uri) {
@@ -408,7 +410,21 @@ fn select_mapped(
         if ov > 0 {
             score += 6;
         }
-        let age = now.saturating_sub(page.created_at);
+        score += idf_points(&page_tokens, query, &df, n_docs);
+        if failish(page.summary.as_deref()) {
+            score += 10;
+        }
+        let recency_ts = latest
+            .get(&page.uri)
+            .map(|o| {
+                if o.accessed_at > 0 {
+                    o.accessed_at
+                } else {
+                    o.created_at
+                }
+            })
+            .unwrap_or(page.created_at);
+        let age = now.saturating_sub(recency_ts);
         score += ((7 * 86_400 - age.clamp(0, 7 * 86_400)) / 86_400) as u32;
         scored.push((
             score,
@@ -424,7 +440,62 @@ fn select_mapped(
         ));
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    scored.into_iter().map(|(_, _, p)| p).take(limit).collect()
+    let mut kind_n: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for (_, _, p) in scored {
+        let kind = uri_kind(&p.uri);
+        let n = kind_n.entry(kind.to_string()).or_insert(0);
+        if *n >= 4 {
+            continue;
+        }
+        *n += 1;
+        out.push(p);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+fn query_df(pages: &[PageMeta], query: &[String]) -> std::collections::HashMap<String, u32> {
+    let mut df = std::collections::HashMap::new();
+    for q in query {
+        let n = pages
+            .iter()
+            .filter(|p| overlap(&parse_task(&p.task), std::slice::from_ref(q)) > 0)
+            .count() as u32;
+        df.insert(q.clone(), n.max(1));
+    }
+    df
+}
+
+fn idf_points(
+    page_tokens: &[String],
+    query: &[String],
+    df: &std::collections::HashMap<String, u32>,
+    n_docs: u32,
+) -> u32 {
+    let mut s = 0u32;
+    for q in query {
+        if overlap(page_tokens, std::slice::from_ref(q)) == 0 {
+            continue;
+        }
+        let d = *df.get(q).unwrap_or(&1);
+        let ratio = (n_docs + 1) as f32 / (d + 1) as f32;
+        s += (ratio.log2() * 6.0).round().max(0.0) as u32;
+    }
+    s
+}
+
+fn failish(summary: Option<&str>) -> bool {
+    let s = summary.unwrap_or("").to_ascii_lowercase();
+    s.contains("fail") || s.contains("error") || s.contains("panic") || s.contains("e0")
+}
+
+fn uri_kind(uri: &str) -> &str {
+    uri.strip_prefix("ctx://")
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
 }
 
 fn label_for(kind: &str) -> String {
@@ -721,5 +792,49 @@ mod tests {
         assert!(out.contains("ctx://shell/abc123#auth::login"), "{out}");
         assert!(out.contains("claude-code"), "{out}");
         assert!(out.contains("COLD"), "{out}");
+    }
+
+    #[test]
+    fn rare_token_beats_common_token() {
+        let now = 1_000_000;
+        let mut metas = Vec::new();
+        for i in 0..8 {
+            metas.push(page(
+                &format!("ctx://shell/bill{i}"),
+                "billing invoice",
+                "cursor",
+                now - 60,
+                "",
+            ));
+        }
+        metas.push(page(
+            "ctx://file/oauth1",
+            "oauth redirect",
+            "claude-code",
+            now - 60,
+            "",
+        ));
+        let query = extract_task(&["oauth billing"]);
+        let mapped = select_mapped(&metas, &[], &query, now, 8);
+        let pos = mapped.iter().position(|p| p.uri == "ctx://file/oauth1");
+        assert_eq!(pos, Some(0), "pos={pos:?} {mapped:?} {query:?}");
+    }
+
+    #[test]
+    fn fail_summary_outranks_ok_twin() {
+        let now = 1_000_000;
+        let metas = vec![
+            page("ctx://shell/ok1", "auth login", "cursor", now - 30, "ok"),
+            page(
+                "ctx://shell/fail1",
+                "auth login",
+                "cursor",
+                now - 30,
+                "FAIL auth::login",
+            ),
+        ];
+        let query = extract_task(&["auth login"]);
+        let mapped = select_mapped(&metas, &[], &query, now, 8);
+        assert_eq!(mapped[0].uri, "ctx://shell/fail1", "{mapped:?}");
     }
 }

@@ -11,7 +11,7 @@ impl Optimizer for McpGuard {
             return None;
         }
         let reduced = reduce_json_like(input.payload);
-        let out = OptimizeOutput::reduced("mcp", reduced);
+        let out = OptimizeOutput::reduced_terminal("mcp", reduced);
         if out.delivered_tokens + 80 >= input.raw_tokens {
             return None;
         }
@@ -50,42 +50,154 @@ pub fn reduce_json_like(payload: &str) -> String {
 
 fn render_json(value: &serde_json::Value, depth: usize) -> String {
     match value {
-        serde_json::Value::Array(items) => {
-            let mut out = format!("[{}]\n", items.len());
-            let preview = items.len().min(3);
-            for (i, item) in items.iter().take(preview).enumerate() {
-                out.push_str(&format!(
-                    "[{i}] {}\n",
-                    summarize_value(item, depth + 1, None)
-                ));
-            }
-            if items.len() > preview {
-                out.push_str(&format!("…{}\n", items.len() - preview));
-            }
-            if let Some(serde_json::Value::Object(map)) = items.first() {
-                let keys: Vec<_> = map.keys().take(8).cloned().collect();
-                out.push_str(&format!("keys {}\n", keys.join(",")));
-            }
-            out
-        }
-        serde_json::Value::Object(map) => {
-            let mut out = format!("{{{}}}\n", map.len());
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort_by_key(|k| (!is_hot_key(k), k.as_str()));
-            for k in keys.into_iter().take(24) {
-                let v = &map[k];
-                out.push_str(&format!(
-                    "{k}: {}\n",
-                    summarize_value(v, depth + 1, Some(k))
-                ));
-            }
-            if map.len() > 24 {
-                out.push_str(&format!("…{}\n", map.len() - 24));
-            }
-            out
-        }
+        serde_json::Value::Array(items) => render_array(items, depth),
+        serde_json::Value::Object(map) => render_object(map, depth),
         other => summarize_value(other, depth, None),
     }
+}
+
+fn looks_like_error_item(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map.keys().any(|k| {
+            is_hot_key(k)
+                || k.eq_ignore_ascii_case("path")
+                || k.eq_ignore_ascii_case("file")
+                || k.eq_ignore_ascii_case("loc")
+                || k.eq_ignore_ascii_case("line")
+        }),
+        serde_json::Value::String(s) => {
+            let l = s.to_ascii_lowercase();
+            l.contains("error") || l.contains("fail") || l.contains("exception")
+        }
+        _ => false,
+    }
+}
+
+fn error_line(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.chars().take(160).collect(),
+        serde_json::Value::Object(map) => {
+            let msg = ["message", "msg", "error", "detail", "reason", "title"]
+                .iter()
+                .find_map(|k| map.iter().find(|(ik, _)| ik.eq_ignore_ascii_case(k)))
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("");
+            let path = ["path", "file", "filename", "loc"]
+                .iter()
+                .find_map(|k| map.iter().find(|(ik, _)| ik.eq_ignore_ascii_case(k)))
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("");
+            let line = map
+                .get("line")
+                .or_else(|| map.get("lineno"))
+                .and_then(|v| v.as_u64());
+            match (path.is_empty(), msg.is_empty(), line) {
+                (false, false, Some(n)) => format!("{path}:{n}  {msg}"),
+                (false, false, None) => format!("{path}  {msg}"),
+                (false, true, _) => path.to_string(),
+                (true, false, _) => msg.chars().take(160).collect(),
+                _ => summarize_value(value, 2, None),
+            }
+        }
+        other => summarize_value(other, 2, None),
+    }
+}
+
+fn render_error_list(items: &[serde_json::Value]) -> String {
+    let mut out = format!("[{}]\n", items.len());
+    for item in items.iter().take(16) {
+        out.push_str(&error_line(item));
+        out.push('\n');
+    }
+    if items.len() > 16 {
+        out.push_str(&format!("… {} more\n", items.len() - 16));
+    }
+    out
+}
+
+fn render_array(items: &[serde_json::Value], depth: usize) -> String {
+    let errorish = items.iter().filter(|i| looks_like_error_item(i)).count();
+    if !items.is_empty() && errorish * 2 >= items.len() {
+        return render_error_list(items);
+    }
+    let mut out = format!("[{}]\n", items.len());
+    let preview = items.len().min(3);
+    for (i, item) in items.iter().take(preview).enumerate() {
+        out.push_str(&format!(
+            "[{i}] {}\n",
+            summarize_value(item, depth + 1, None)
+        ));
+    }
+    if items.len() > preview {
+        out.push_str(&format!("…{}\n", items.len() - preview));
+    }
+    if let Some(serde_json::Value::Object(map)) = items.first() {
+        let keys: Vec<_> = map.keys().take(8).cloned().collect();
+        out.push_str(&format!("keys {}\n", keys.join(",")));
+    }
+    out
+}
+
+fn render_object(map: &serde_json::Map<String, serde_json::Value>, depth: usize) -> String {
+    if let Some((key, items)) = named_error_array(map) {
+        let mut out = format!("{{{}}}  {key}\n", map.len());
+        for k in ["status", "code", "message", "msg"] {
+            if let Some((ik, v)) = map.iter().find(|(ik, _)| ik.eq_ignore_ascii_case(k)) {
+                if !v.is_array() {
+                    out.push_str(&format!(
+                        "{ik}: {}\n",
+                        summarize_value(v, depth + 1, Some(ik))
+                    ));
+                }
+            }
+        }
+        out.push_str(&render_error_list(items));
+        return out;
+    }
+    let mut out = format!("{{{}}}\n", map.len());
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort_by_key(|k| (!is_hot_key(k), k.as_str()));
+    for k in keys.into_iter().take(24) {
+        let v = &map[k];
+        if let Some(arr) = v.as_array() {
+            if error_list_ratio(arr) {
+                out.push_str(k);
+                out.push('\n');
+                out.push_str(&render_error_list(arr));
+                continue;
+            }
+        }
+        out.push_str(&format!(
+            "{k}: {}\n",
+            summarize_value(v, depth + 1, Some(k))
+        ));
+    }
+    if map.len() > 24 {
+        out.push_str(&format!("…{}\n", map.len() - 24));
+    }
+    out
+}
+
+fn named_error_array(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<(&str, &[serde_json::Value])> {
+    for name in ["errors", "issues", "diagnostics", "violations"] {
+        if let Some(arr) = map
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .and_then(|(_, v)| v.as_array())
+        {
+            if error_list_ratio(arr) {
+                return Some((name, arr.as_slice()));
+            }
+        }
+    }
+    None
+}
+
+fn error_list_ratio(items: &[serde_json::Value]) -> bool {
+    !items.is_empty()
+        && items.iter().filter(|i| looks_like_error_item(i)).count() * 2 >= items.len()
 }
 
 fn summarize_value(value: &serde_json::Value, depth: usize, key: Option<&str>) -> String {
@@ -158,5 +270,25 @@ mod tests {
         let out = reduce_json_like(&raw);
         assert!(out.contains("redirect_uri mismatch"), "{out}");
         assert!(out.contains("src/oauth.rs"), "{out}");
+    }
+
+    #[test]
+    fn error_array_keeps_each_message() {
+        let items: Vec<_> = (0..12)
+            .map(|i| {
+                serde_json::json!({
+                    "path": format!("src/mod{i}.rs"),
+                    "line": 10 + i,
+                    "message": format!("redirect_uri mismatch {i} {}", "detail ".repeat(20))
+                })
+            })
+            .collect();
+        let raw = serde_json::to_string(&items).unwrap();
+        let out = reduce_json_like(&raw);
+        assert!(out.contains("redirect_uri mismatch 0"), "{out}");
+        assert!(out.contains("redirect_uri mismatch 7"), "{out}");
+        assert!(out.contains("src/mod0.rs"), "{out}");
+        assert!(out.matches("redirect_uri mismatch").count() >= 8, "{out}");
+        assert!(!out.contains("\"path\":"), "{out}");
     }
 }

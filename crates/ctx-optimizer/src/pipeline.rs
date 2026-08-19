@@ -28,6 +28,13 @@ impl OptimizeOutput {
             duplicate_of: None,
         }
     }
+
+    /// Specialized guards (shell / file / mcp) must win over Generic.
+    pub fn reduced_terminal(optimizer: &'static str, text: String) -> Self {
+        let mut out = Self::reduced(optimizer, text);
+        out.terminal = true;
+        out
+    }
 }
 
 pub trait Optimizer: Send + Sync {
@@ -67,5 +74,36 @@ impl Pipeline {
             }
         }
         best.filter(|out| out.delivered_tokens + 40 < input.raw_tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tokens::estimate_tokens;
+
+    #[test]
+    fn shell_wins_over_generic_on_cargo_fail() {
+        let mut payload = String::from("running 200 tests\n");
+        for i in 0..280 {
+            payload.push_str(&format!("test t{i} ... ok\n"));
+        }
+        payload.push_str(
+            "test auth::login ... FAILED\n\nfailures:\n\n---- auth::login stdout ----\nleft: 401\nright: 200\nredirect_uri mismatch\ntest result: FAILED. 200 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n",
+        );
+        let raw = estimate_tokens(&payload);
+        assert!(raw >= 1_200, "need generic to also qualify, got {raw}");
+        let input = OptimizeInput {
+            kind: "shell",
+            tool_name: Some("Bash"),
+            payload: &payload,
+            metadata: &serde_json::json!({"command": "cargo test"}),
+            raw_tokens: raw,
+        };
+        let out = Pipeline::v0().run(&input).expect("reduce");
+        assert_eq!(out.optimizer, "shell", "{}", out.text);
+        assert!(out.text.contains("401"), "{}", out.text);
+        assert!(out.text.contains("auth::login"), "{}", out.text);
+        assert!(out.terminal);
     }
 }

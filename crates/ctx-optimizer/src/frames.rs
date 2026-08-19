@@ -5,7 +5,7 @@
 
 use ctx_protocol::Frame;
 
-use crate::symbols::symbol_name;
+use crate::symbols::collect_symbol_spans;
 
 pub fn extract_frames(kind: &str, payload: &str) -> Vec<Frame> {
     let mut frames = Vec::new();
@@ -19,13 +19,33 @@ pub fn extract_frames(kind: &str, payload: &str) -> Vec<Frame> {
     frames
 }
 
+/// A compiler/test mention of a source file, optionally a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapHit {
+    pub path: String,
+    pub line: Option<u32>,
+}
+
 /// Source paths mentioned in compiler/test output. Prefetch map, not inlined.
 pub fn extract_maps(payload: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for hit in extract_map_hits(payload) {
+        if !paths.iter().any(|p| p == &hit.path) {
+            paths.push(hit.path);
+        }
+    }
+    paths
+}
+
+pub fn extract_map_hits(payload: &str) -> Vec<MapHit> {
     let mut out = Vec::new();
     for line in payload.lines() {
-        if let Some(path) = map_path(line) {
-            if !out.iter().any(|p| p == &path) {
-                out.push(path);
+        if let Some(hit) = map_hit(line) {
+            if !out
+                .iter()
+                .any(|p: &MapHit| p.path == hit.path && p.line == hit.line)
+            {
+                out.push(hit);
             }
         }
         if out.len() >= 12 {
@@ -173,11 +193,11 @@ fn pytest_failed_name(t: &str) -> Option<String> {
 }
 
 fn collect_symbol_frames(payload: &str, frames: &mut Vec<Frame>) {
-    for (i, line) in payload.lines().enumerate() {
-        let t = line.trim();
-        if let Some(name) = symbol_name(t) {
-            frames.push(Frame::new(name, "symbol", (i + 1) as u32, (i + 1) as u32));
-        }
+    for span in collect_symbol_spans(payload) {
+        frames.push(
+            Frame::new(span.name, "symbol", span.start_line, span.end_line)
+                .with_hint(span.signature),
+        );
     }
 }
 
@@ -198,21 +218,69 @@ fn collect_signal_frames(payload: &str, frames: &mut Vec<Frame>) {
 }
 
 fn map_path(line: &str) -> Option<String> {
+    map_hit(line).map(|h| h.path)
+}
+
+fn map_hit(line: &str) -> Option<MapHit> {
     let t = line.trim();
     if let Some(rest) = t.strip_prefix("--> ") {
-        let path = rest.split(':').next()?.trim();
-        return sane_path(path);
+        return path_line(rest, ':');
     }
     if let Some(idx) = t.find("panicked at ") {
         let rest = &t[idx + "panicked at ".len()..];
-        let path = rest.split(':').next()?.trim();
-        return sane_path(path);
+        return path_line(rest, ':');
     }
     if let Some(rest) = t.strip_prefix("File \"") {
         let path = rest.split('"').next()?;
-        return sane_path(path);
+        let after = rest.split('"').nth(1).unwrap_or("");
+        let line = after
+            .split("line ")
+            .nth(1)
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse().ok());
+        return Some(MapHit {
+            path: sane_path(path)?,
+            line,
+        });
+    }
+    // tsc: src/foo.ts(12,3): error TS2304
+    if t.contains("error TS") {
+        if let Some(idx) = t.find('(') {
+            let path = t[..idx].trim();
+            if let Some(p) = sane_path(path) {
+                let line = t[idx + 1..].split(',').next().and_then(|s| s.parse().ok());
+                return Some(MapHit { path: p, line });
+            }
+        }
+    }
+    // go: foo.go:12: message
+    if let Some((path, rest)) = t.split_once(".go:") {
+        if let Some(p) = sane_path(&format!("{path}.go")) {
+            let line = rest.split(':').next().and_then(|s| s.parse().ok());
+            return Some(MapHit { path: p, line });
+        }
+    }
+    // jest / node: at Object (src/foo.ts:12:5)
+    if let Some(idx) = t.rfind('(') {
+        let inner = t[idx + 1..].trim_end_matches(')');
+        if let Some(hit) = path_line(inner, ':') {
+            return Some(hit);
+        }
     }
     None
+}
+
+fn path_line(rest: &str, sep: char) -> Option<MapHit> {
+    let path = rest.split(sep).next()?.trim();
+    let line = rest
+        .split(sep)
+        .nth(1)
+        .and_then(|s| s.split(sep).next())
+        .and_then(|s| s.trim().parse().ok());
+    Some(MapHit {
+        path: sane_path(path)?,
+        line,
+    })
 }
 
 fn sane_path(path: &str) -> Option<String> {
@@ -229,7 +297,8 @@ fn sane_path(path: &str) -> Option<String> {
         || lower.ends_with(".ts")
         || lower.ends_with(".js")
         || lower.ends_with(".go")
-        || lower.ends_with(".tsx"))
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".jsx"))
     {
         return None;
     }
@@ -302,5 +371,31 @@ mod tests {
         assert!(frames.iter().any(|f| f.name == "E0308"), "{frames:?}");
         let maps = extract_maps(raw);
         assert_eq!(maps, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn file_symbol_frame_covers_body() {
+        let src = "fn other() { 1 }\npub fn login(x: i32) -> i32 {\n    let y = x + 1;\n    y\n}\n";
+        let frames = extract_frames("file", src);
+        let login = frames.iter().find(|f| f.name == "login").expect("login");
+        assert!(login.end_line > login.start_line, "{login:?}");
+        assert!(login.start_line >= 2 && login.end_line <= 5, "{login:?}");
+    }
+
+    #[test]
+    fn rustc_span_is_a_line_hit() {
+        let raw = "error[E0308]: mismatched types\n  --> src/auth.rs:82:5\n   |\n";
+        let hits = extract_map_hits(raw);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].path, "src/auth.rs");
+        assert_eq!(hits[0].line, Some(82));
+    }
+
+    #[test]
+    fn jest_paren_span_is_a_line_hit() {
+        let raw = "    at Object.<anonymous> (src/auth.test.ts:12:5)\n";
+        let hits = extract_map_hits(raw);
+        assert_eq!(hits[0].path, "src/auth.test.ts");
+        assert_eq!(hits[0].line, Some(12));
     }
 }

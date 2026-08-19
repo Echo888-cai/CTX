@@ -719,7 +719,11 @@ impl Store {
             "SELECT uri, name, kind, hint FROM frames
              WHERE lower(name) LIKE ?1 ESCAPE '\\'
                 OR lower(hint) LIKE ?1 ESCAPE '\\'
-             ORDER BY start_line ASC
+             ORDER BY CASE kind
+                WHEN 'fail' THEN 0
+                WHEN 'error' THEN 1
+                ELSE 2
+             END, start_line ASC
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pat, cap], |r| {
@@ -1026,12 +1030,16 @@ mod tests {
         store
             .replace_frames(
                 &uri.page_key(),
-                &[ctx_protocol::Frame::new("auth::login", "fail", 10, 18).with_hint("left: 401")],
+                &[
+                    ctx_protocol::Frame::new("login_helper", "symbol", 1, 8),
+                    ctx_protocol::Frame::new("auth::login", "fail", 10, 18).with_hint("left: 401"),
+                ],
             )
             .unwrap();
         let hits = store.search_frames("login", 8).unwrap();
-        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits.len() >= 2, "{hits:?}");
         assert_eq!(hits[0].name, "auth::login");
+        assert_eq!(hits[0].kind, "fail");
         assert!(hits[0].hint.contains("401"));
     }
 

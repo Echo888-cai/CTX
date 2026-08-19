@@ -41,12 +41,18 @@ pub fn render_virtualized_space(
     let summary_l = summary.to_ascii_lowercase();
     let extra_maps: Vec<&str> = maps
         .iter()
-        .map(|m| map_path_token(m))
-        .filter(|p| !p.is_empty() && !summary_l.contains(&p.to_ascii_lowercase()))
-        .take(6)
+        .map(|m| m.as_str())
+        .filter(|m| {
+            if m.contains("ctx://") || m.contains('#') {
+                return true;
+            }
+            let p = map_path_token(m);
+            !p.is_empty() && !summary_l.contains(&p.to_ascii_lowercase())
+        })
+        .take(4)
         .collect();
     if !extra_maps.is_empty() {
-        out.push_str(&extra_maps.join(" "));
+        out.push_str(&extra_maps.join("\n"));
         out.push('\n');
     }
     out
@@ -136,5 +142,19 @@ mod tests {
             "path already in summary must not repeat:\n{out}"
         );
         assert!(!out.contains("Address space"), "{out}");
+    }
+
+    #[test]
+    fn prefetch_map_keeps_file_frame_address() {
+        let uri = CtxUri::parse("ctx://shell/9ba72f3c1a2e").unwrap();
+        let out = render_virtualized_space(
+            "1 failed\npanicked at src/auth.rs:82:5",
+            &uri,
+            18000,
+            400,
+            &[],
+            &["ctx://file/81bfa4c2d91e#login  src/auth.rs:82#login".into()],
+        );
+        assert!(out.contains("ctx://file/81bfa4c2d91e#login"), "{out}");
     }
 }

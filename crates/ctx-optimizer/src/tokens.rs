@@ -6,13 +6,21 @@ pub fn estimate_tokens(text: &str) -> u32 {
     if text.is_empty() {
         return 0;
     }
-    let chars = if text.is_ascii() {
-        text.len() as f64
+    let mut ascii = 0u32;
+    let mut other = 0u32;
+    if text.is_ascii() {
+        ascii = text.len() as u32;
     } else {
-        text.chars().count() as f64
-    };
+        for c in text.chars() {
+            if c.is_ascii() {
+                ascii += 1;
+            } else {
+                other += 1;
+            }
+        }
+    }
     let words = word_count(text) as f64;
-    let by_chars = chars / 3.8;
+    let by_chars = ascii as f64 / 3.8 + other as f64 / 1.1;
     let by_words = words * 1.3;
     by_chars.max(by_words).round().max(1.0) as u32
 }

@@ -201,6 +201,80 @@ fn write_token_bench() {
         signal_hits(&json_out, &["200"]),
     ));
 
+    let err_items: Vec<_> = (0..12)
+        .map(|i| {
+            serde_json::json!({
+                "path": format!("src/mod{i}.rs"),
+                "line": 10 + i,
+                "message": format!("redirect_uri mismatch {i}")
+            })
+        })
+        .collect();
+    let err_json = serde_json::to_string(&err_items).unwrap();
+    let err_out = reduce_json_like(&err_json);
+    rows.push(row(
+        "MCP JSON error list",
+        "mcp",
+        estimate_tokens(&err_json),
+        estimate_tokens(&err_out),
+        "mcp",
+        signal_hits(&err_out, &["redirect_uri mismatch 0", "src/mod0.rs"]),
+    ));
+
+    let mut git_diff = String::from(concat!(
+        "diff --git a/src/auth.rs b/src/auth.rs\n",
+        "--- a/src/auth.rs\n",
+        "+++ b/src/auth.rs\n",
+        "@@ -80,4 +80,6 @@ pub fn login() {\n",
+        "     let x = 1;\n",
+        "-    Ok(200)\n",
+        "+    Err(401)\n",
+        "+    // redirect_uri mismatch\n",
+    ));
+    for i in 0..60 {
+        git_diff.push_str(&format!("+ padding_line_{i}_bbbb\n"));
+    }
+    let git_out = ctx_optimizer::reduce_shell(&git_diff);
+    rows.push(row(
+        "git diff",
+        "shell",
+        estimate_tokens(&git_diff),
+        estimate_tokens(&git_out),
+        "shell",
+        signal_hits(&git_out, &["src/auth.rs", "401"]),
+    ));
+
+    let mut npm = String::new();
+    for i in 0..40 {
+        npm.push_str(&format!(
+            "npm http fetch GET 200 https://registry.npmjs.org/pkg{i} 12ms\n"
+        ));
+    }
+    npm.push_str("added 342 packages, and audited 343 packages in 12s\n");
+    let npm_out = ctx_optimizer::reduce_shell(&npm);
+    rows.push(row(
+        "npm install",
+        "shell",
+        estimate_tokens(&npm),
+        estimate_tokens(&npm_out),
+        "shell",
+        signal_hits(&npm_out, &["added 342"]),
+    ));
+
+    let mut rg = String::new();
+    for i in 0..80 {
+        rg.push_str(&format!("src/auth.rs:{i}: let status = {i}\n"));
+    }
+    let rg_out = ctx_optimizer::reduce_shell(&rg);
+    rows.push(row(
+        "ripgrep",
+        "shell",
+        estimate_tokens(&rg),
+        estimate_tokens(&rg_out),
+        "shell",
+        signal_hits(&rg_out, &["src/auth.rs"]),
+    ));
+
     let mut prev = String::from("running 80 tests\n");
     let mut curr = String::from("running 80 tests\n");
     for i in 0..80 {
