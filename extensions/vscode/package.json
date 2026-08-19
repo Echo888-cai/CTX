@@ -11,6 +11,16 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./extension.js",
   "contributes": {
+    "configuration": {
+      "title": "CTX",
+      "properties": {
+        "ctx.bin": {
+          "type": "string",
+          "default": "ctx",
+          "description": "Path to the ctx binary"
+        }
+      }
+    },
     "commands": [
       { "command": "ctx.install", "title": "CTX: Install hooks" },
       { "command": "ctx.uninstall", "title": "CTX: Uninstall hooks" },

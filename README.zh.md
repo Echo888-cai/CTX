@@ -36,20 +36,19 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-一行。没有 Rust 会先装 rustup。
+一行。有 `v*` Release 就下预编译包；没有则装 Rust 并本地编译。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
-然后：
+从源码安装，现在就能用：
 
 ```bash
-ctx app                 # 仪表盘：今天挡在模型外面的 token
-ctx app --install-service   # 可选：登录后自动开
+cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
+ctx init
+ctx setup --wizard
 ```
-
-最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
 
 在本仓库：
 
@@ -58,8 +57,27 @@ bash install.sh
 # 或
 cargo install --path apps/cli --locked --force
 ctx init
-ctx setup all    # Claude Code + Cursor
+ctx setup all    # Claude、Cursor、Windsurf、VS Code、Continue、JetBrains、Aider、Codex
 ```
+
+Docker 用这份代码构建（不依赖镜像仓库）：
+
+```bash
+docker build -t ctx .
+docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ctx status
+```
+
+然后：
+
+```bash
+ctx app                 # 仪表盘：今天挡在模型外面的 token
+ctx app --install-service   # 可选：登录后自动开
+ctx setup --wizard      # 探测 harness，选预算
+```
+
+最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
+
+推送 `v*` tag 之后，Release workflow 会发布 tarball 和 `ghcr.io/echo888-cai/ctx`。那时再用 `dist/homebrew/ctx.rb`。
 
 ## 模型看到什么
 
@@ -93,9 +111,9 @@ ctx://shell/9ba72f3c#auth::login  18241→412
 
 | 层 | 做什么 |
 |---|---|
-| 确定性削减 | 剥 ANSI、通过的测试、进度条、git/npm/rg 噪音。解析器，不是模型。 |
+| 确定性削减 | 剥 ANSI、通过的测试、进度条、git/npm/rg 噪音。解析器，不是模型。可挂 WASM / 命令插件。 |
 | 结构虚拟化 | 字节进内容寻址 store。模型拿到 handle。 |
-| 语义 working set | 按任务 token 映射页。跨 harness。Compact 后重新映射。 |
+| 语义 working set | 按任务 token（TF-IDF）映射页。跨 harness。Compact 后重新映射。 |
 
 细节：[docs/architecture.md](docs/architecture.md)
 
@@ -105,10 +123,28 @@ ctx://shell/9ba72f3c#auth::login  18241→412
 |---|---|
 | **Claude Code** | 原地替换工具输出（`updatedToolOutput`）。 |
 | **Cursor** | shell 改写成 `ctx exec`。MCP 输出可替换。大文件 → `ctx_read`。 |
+| **Windsurf** | MCP，形状同 Cursor。 |
+| **VS Code / Copilot** | 扩展 + 用户/工作区 MCP。状态栏显示少进模型的 token。 |
+| **Continue.dev** | `~/.continue/mcpServers/ctx.yaml` |
+| **JetBrains AI** | IDE / `.idea` 的 MCP json。 |
+| **Aider** | `~/.ctx/bin/aider-ctx` 包装 `ctx exec -- aider`。 |
+| **Codex CLI** | `~/.codex/config.toml` 里的 `[mcp_servers.ctx]`。 |
 
 ```bash
 ctx setup claude
 ctx setup cursor
+ctx setup vscode
+ctx doctor
+```
+
+## 第二天
+
+```bash
+ctx inspect --json          # HOT / WARM / COLD
+ctx snapshot create
+ctx version pin
+ctx version rollback
+ctx ci --shell -- cargo test
 ```
 
 ## 自测（本仓库）

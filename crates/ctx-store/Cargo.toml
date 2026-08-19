@@ -10,6 +10,7 @@ description = "Content-addressed context store (SQLite + BLAKE3 + zstd)"
 blake3.workspace = true
 ctx-protocol.workspace = true
 dirs.workspace = true
+r2d2.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,7 +1,7 @@
 {
   "name": "@ctx-labs/install",
   "version": "0.2.0",
-  "description": "Install the CTX CLI from GitHub Releases",
+  "description": "Install the CTX CLI from GitHub Releases (run from this repo until published)",
   "bin": {
     "ctx-install": "./install.js"
   },

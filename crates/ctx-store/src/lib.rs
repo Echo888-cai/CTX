@@ -12,6 +12,7 @@ mod error;
 mod metrics;
 mod observe;
 mod paths;
+mod pool;
 
 pub use blob::{blake3_hex, normalize_hash};
 pub use cache::{decode_blob_file, prefetch_blobs, stats as cache_stats};
@@ -153,8 +154,8 @@ pub struct Store {
     paths: CtxPaths,
     /// ingest / mutations
     write: Mutex<Connection>,
-    /// dashboard + search (WAL snapshot; query_only)
-    read: Mutex<Connection>,
+    /// dashboard + MCP + search (WAL snapshot; query_only)
+    read: r2d2::Pool<pool::SqliteConnectionManager>,
 }
 
 impl Store {
@@ -166,13 +167,14 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(Duration::from_millis(5_000))?;
         migrate(&conn)?;
-        let read = Connection::open(paths.db_path())?;
-        read.busy_timeout(Duration::from_millis(5_000))?;
-        let _ = read.pragma_update(None, "query_only", 1);
+        let read = r2d2::Pool::builder()
+            .max_size(8)
+            .min_idle(Some(1))
+            .build(pool::SqliteConnectionManager::query_only(paths.db_path()))?;
         Ok(Self {
             paths,
             write: Mutex::new(conn),
-            read: Mutex::new(read),
+            read,
         })
     }
 
@@ -188,8 +190,8 @@ impl Store {
         self.write.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn reader(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.read.lock().unwrap_or_else(|e| e.into_inner())
+    fn reader(&self) -> r2d2::PooledConnection<pool::SqliteConnectionManager> {
+        self.read.get().expect("ctx read pool")
     }
 
     pub fn put_bytes(&self, bytes: &[u8]) -> Result<PutBlob> {
@@ -1168,6 +1170,20 @@ mod tests {
         let put = store.put_bytes(&payload).unwrap();
         assert_eq!(store.get_bytes(&put.hash).unwrap(), payload);
         assert_eq!(store.get_bytes(&put.hash).unwrap(), payload);
+    }
+
+    #[test]
+    fn read_pool_serves_parallel_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(crate::CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let _ = store.put_bytes(b"pool-payload").unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let _ = store.search_fts("pool", 4).unwrap();
+                });
+            }
+        });
     }
 
     #[test]

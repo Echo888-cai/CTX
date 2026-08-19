@@ -5,6 +5,7 @@ class Ctx < Formula
   homepage "https://github.com/Echo888-cai/CTX"
   version "0.2.0"
   license "MIT"
+  sha256 :no_check
 
   on_macos do
     if Hardware::CPU.arm?

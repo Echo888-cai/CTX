@@ -445,6 +445,7 @@
           </label>
           <label><input id="cfg-enabled" type="checkbox" /> 启用虚化</label>
           <label><input id="cfg-snap" type="checkbox" /> 自动快照（24h）</label>
+          <label><input id="cfg-autostart" type="checkbox" /> 登录时打开仪表盘</label>
           <button class="primary" type="submit">保存</button>
           <p class="desc" id="cfg-msg"></p>
         </form>
@@ -656,6 +657,7 @@ async function loadCfg() {
   $("cfg-large").value = c.large_file_tokens || 400;
   $("cfg-enabled").checked = c.enabled !== false;
   $("cfg-snap").checked = !!c.auto_snapshot;
+  if ($("cfg-autostart")) $("cfg-autostart").checked = !!c.dashboard_autostart;
 }
 async function load() {
   try {
@@ -695,6 +697,7 @@ document.getElementById("cfg")?.addEventListener("submit", async (ev) => {
     large_file_tokens: Number($("cfg-large").value),
     enabled: $("cfg-enabled").checked,
     auto_snapshot: $("cfg-snap").checked,
+    dashboard_autostart: !!$("cfg-autostart")?.checked,
   };
   const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await r.json();

@@ -21,31 +21,36 @@ runs:
         os="$(uname -s)"
         arch="$(uname -m)"
         case "$os-$arch" in
-          Darwin-arm64) target="aarch64-apple-darwin" ;;
-          Darwin-x86_64) target="x86_64-apple-darwin" ;;
-          Linux-x86_64) target="x86_64-unknown-linux-gnu" ;;
-          Linux-aarch64) target="aarch64-unknown-linux-gnu" ;;
+          Darwin-arm64) targets="aarch64-apple-darwin" ;;
+          Darwin-x86_64) targets="x86_64-apple-darwin" ;;
+          Linux-x86_64) targets="x86_64-unknown-linux-gnu x86_64-unknown-linux-musl" ;;
+          Linux-aarch64) targets="aarch64-unknown-linux-gnu" ;;
           *) echo "unsupported $os-$arch"; exit 1 ;;
         esac
         dest="${HOME}/.local/bin"
         mkdir -p "$dest"
         tmp="$(mktemp -d)"
-        if [ "$CTX_VERSION" = "latest" ]; then
-          url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
-        else
-          url="https://github.com/Echo888-cai/CTX/releases/download/v${CTX_VERSION}/ctx-${target}.tar.gz"
-        fi
-        if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
-          tar -C "$tmp" -xzf "$tmp/ctx.tar.gz"
-          if [ -f "$tmp/ctx-${target}" ]; then
-            install -m 755 "$tmp/ctx-${target}" "$dest/ctx"
-          elif [ -f "$tmp/ctx" ]; then
-            install -m 755 "$tmp/ctx" "$dest/ctx"
+        installed=
+        for target in $targets; do
+          if [ "$CTX_VERSION" = "latest" ]; then
+            url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
           else
-            echo "archive missing ctx binary"
-            exit 1
+            url="https://github.com/Echo888-cai/CTX/releases/download/v${CTX_VERSION}/ctx-${target}.tar.gz"
           fi
-        else
+          if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
+            tar -C "$tmp" -xzf "$tmp/ctx.tar.gz"
+            if [ -f "$tmp/ctx-${target}" ]; then
+              install -m 755 "$tmp/ctx-${target}" "$dest/ctx"
+            elif [ -f "$tmp/ctx" ]; then
+              install -m 755 "$tmp/ctx" "$dest/ctx"
+            else
+              continue
+            fi
+            installed=1
+            break
+          fi
+        done
+        if [ -z "$installed" ]; then
           echo "prebuilt missing; building with cargo"
           cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
           dest="${CARGO_HOME:-$HOME/.cargo}/bin"
