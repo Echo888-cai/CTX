@@ -40,6 +40,21 @@
     justify-content: space-between;
     min-height: 42px;
   }
+  .nav { display: flex; gap: 6px; margin: 18px 0 0; }
+  .nav a {
+    color: var(--muted);
+    text-decoration: none;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  .nav a.on { color: var(--ink); background: var(--green-soft); }
+  .view[hidden] { display: none !important; }
+  .form { display: grid; gap: 12px; max-width: 420px; }
+  .form label { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+  .form input, .form select { min-height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+  .pages td { font-variant-numeric: tabular-nums; }
+
   .brand { display: inline-flex; align-items: center; width: 242px; height: 34px; }
   .brand img { display: block; width: 100%; height: auto; }
   .controls { display: flex; align-items: center; gap: 16px; }
@@ -318,7 +333,13 @@
         </select>
       </div>
     </header>
+    <nav class="nav" aria-label="视图">
+      <a href="#overview" data-view="overview" class="on">概览</a>
+      <a href="#pages" data-view="pages">页面</a>
+      <a href="#settings" data-view="settings">设置</a>
+    </nav>
 
+    <div id="view-overview">
     <section class="hero" aria-labelledby="hero-title">
       <div>
         <h1 id="hero-title">让上下文，精准抵达。</h1>
@@ -387,6 +408,42 @@
       <section class="panel" aria-labelledby="feed-title">
         <h2 id="feed-title">实时日志</h2>
         <div class="feed" id="feed">等待事件…</div>
+      </section>
+    </div>
+    </div>
+    <div id="view-pages" class="view" hidden>
+      <section class="card" aria-labelledby="pages-title">
+        <div class="card-h"><h2 id="pages-title">HOT / WARM / COLD</h2></div>
+        <div class="table-wrap">
+          <table class="pages">
+            <thead><tr><th>层</th><th>URI</th><th>tokens</th><th>来源</th></tr></thead>
+            <tbody id="page-rows"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+    <div id="view-settings" class="view" hidden>
+      <section class="card" aria-labelledby="cfg-title">
+        <div class="card-h"><h2 id="cfg-title">配置</h2></div>
+        <form class="form" id="cfg">
+          <label>预算策略
+            <select id="cfg-strategy">
+              <option value="extreme">极致</option>
+              <option value="balanced">平衡</option>
+              <option value="conservative">保守</option>
+            </select>
+          </label>
+          <label>虚化阈值（tokens）
+            <input id="cfg-threshold" type="number" min="40" max="4000" />
+          </label>
+          <label>大文件阈值（tokens）
+            <input id="cfg-large" type="number" min="80" max="8000" />
+          </label>
+          <label><input id="cfg-enabled" type="checkbox" /> 启用虚化</label>
+          <label><input id="cfg-snap" type="checkbox" /> 自动快照（24h）</label>
+          <button class="primary" type="submit">保存</button>
+          <p class="desc" id="cfg-msg"></p>
+        </form>
       </section>
     </div>
   </main>
@@ -565,6 +622,37 @@ async function act(url, prompt) {
     window.alert(String(error));
   }
 }
+function showView(name) {
+  const views = ["overview", "pages", "settings"];
+  views.forEach((id) => {
+    const el = document.getElementById("view-" + id);
+    if (el) el.hidden = id !== name;
+  });
+  document.querySelectorAll(".nav a").forEach((a) => {
+    a.classList.toggle("on", a.dataset.view === name);
+  });
+  if (name === "pages") loadPages();
+  if (name === "settings") loadCfg();
+}
+async function loadPages() {
+  const r = await fetch("/api/inspect");
+  const data = await r.json();
+  const rows = $("page-rows");
+  if (!rows) return;
+  const pages = data.pages || [];
+  rows.innerHTML = pages.length
+    ? pages.map((p) => `<tr><td>${esc(p.layer)}</td><td>${esc(p.uri)}</td><td>${esc(p.tokens)}</td><td>${esc(p.harness)}</td></tr>`).join("")
+    : `<tr><td colspan="4">还没有页面。运行 ctx demo。</td></tr>`;
+}
+async function loadCfg() {
+  const r = await fetch("/api/config");
+  const c = await r.json();
+  $("cfg-strategy").value = c.budget_strategy || "balanced";
+  $("cfg-threshold").value = c.virtualize_threshold_tokens || 200;
+  $("cfg-large").value = c.large_file_tokens || 400;
+  $("cfg-enabled").checked = c.enabled !== false;
+  $("cfg-snap").checked = !!c.auto_snapshot;
+}
 async function load() {
   try {
     const response = await fetch(`/api/status?range=${state.range}&model=${encodeURIComponent(state.model)}`);
@@ -590,6 +678,21 @@ $("pause").onclick = () => {
 };
 $("snap").onclick = () => act("/api/snapshot");
 window.addEventListener("resize", () => { if (state.data) drawChart(state.data.series || []); });
+window.addEventListener("hashchange", () => showView((location.hash || "#overview").slice(1) || "overview"));
+document.getElementById("cfg")?.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const body = {
+    budget_strategy: $("cfg-strategy").value,
+    virtualize_threshold_tokens: Number($("cfg-threshold").value),
+    large_file_tokens: Number($("cfg-large").value),
+    enabled: $("cfg-enabled").checked,
+    auto_snapshot: $("cfg-snap").checked,
+  };
+  const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json();
+  $("cfg-msg").textContent = data.ok ? "已保存。新会话会读到这份配置。" : (data.error || "保存失败");
+});
+showView((location.hash || "#overview").slice(1) || "overview");
 load();
 setInterval(load, 2000);
 </script>

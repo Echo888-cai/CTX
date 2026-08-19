@@ -1,0 +1,38 @@
+{
+  "name": "ctx",
+  "displayName": "CTX",
+  "description": "Virtual memory for AI context — status, dashboard, and ctx_read",
+  "version": "0.2.0",
+  "publisher": "ctx-labs",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "ctx.install", "title": "CTX: Install hooks" },
+      { "command": "ctx.uninstall", "title": "CTX: Uninstall hooks" },
+      { "command": "ctx.dashboard", "title": "CTX: Open dashboard" },
+      { "command": "ctx.status", "title": "CTX: Status" },
+      { "command": "ctx.inspect", "title": "CTX: Working set (HOT / WARM / COLD)" },
+      { "command": "ctx.readFile", "title": "CTX: Read through ctx_read" }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "ctx.readFile",
+          "group": "navigation@90",
+          "when": "resourceScheme == file && !explorerResourceIsFolder"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "ctx.readFile",
+          "when": "resourceScheme == file"
+        }
+      ]
+    }
+  }
+}

@@ -6,6 +6,21 @@ use ctx_core::{ensure_exec_header, single_quote, Runtime};
 use ctx_protocol::{CtxEvent, Harness, ToolRef};
 
 pub fn run(shell: bool, cwd: Option<&Path>, command: &[String]) -> anyhow::Result<i32> {
+    let (code, _) = ingest(shell, cwd, command, true)?;
+    Ok(code)
+}
+
+pub fn capture(shell: bool, cwd: Option<&Path>, command: &[String]) -> anyhow::Result<String> {
+    let (_code, delivered) = ingest(shell, cwd, command, false)?;
+    Ok(delivered)
+}
+
+fn ingest(
+    shell: bool,
+    cwd: Option<&Path>,
+    command: &[String],
+    print_out: bool,
+) -> anyhow::Result<(i32, String)> {
     if command.is_empty() {
         anyhow::bail!("missing command");
     }
@@ -62,26 +77,33 @@ pub fn run(shell: bool, cwd: Option<&Path>, command: &[String]) -> anyhow::Resul
                         &result.delivered,
                         result.uri.as_deref(),
                     );
-                    print!("{out}");
-                    if !out.ends_with('\n') {
-                        println!();
+                    if print_out {
+                        print!("{out}");
+                        if !out.ends_with('\n') {
+                            println!();
+                        }
                     }
+                    Ok((code, out))
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "ctx exec ingest failed; passing raw output");
                     let out = ensure_exec_header(&display_cmd, code, &payload, None);
-                    print!("{out}");
+                    if print_out {
+                        print!("{out}");
+                    }
+                    Ok((code, out))
                 }
             }
         }
         Err(err) => {
             tracing::warn!(error = %err, "ctx store unavailable; passing raw output");
             let out = ensure_exec_header(&display_cmd, code, &payload, None);
-            print!("{out}");
+            if print_out {
+                print!("{out}");
+            }
+            Ok((code, out))
         }
     }
-
-    Ok(code)
 }
 
 fn session_id() -> String {

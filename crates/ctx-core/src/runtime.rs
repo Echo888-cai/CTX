@@ -50,7 +50,7 @@ struct Delivery {
 impl Runtime {
     pub fn open(store: Store) -> Self {
         let config = Config::load(store.paths());
-        let pipeline = Pipeline::from_names(&config.optimizers);
+        let pipeline = Pipeline::from_specs(&config.optimizers);
         Self {
             store,
             config,

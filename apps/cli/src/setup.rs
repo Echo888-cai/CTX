@@ -39,7 +39,7 @@ pub fn init() -> anyhow::Result<()> {
         println!("  ✓  Windsurf     mcp");
     }
     if !claude && !cursor && !windsurf {
-        println!("  ·  none — later: ctx setup claude, cursor, or windsurf");
+        println!("  ·  none — later: ctx setup claude, cursor, windsurf, or vscode");
     }
 
     let _ = crate::snapshot::pin();
@@ -67,16 +67,24 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
             println!("Windsurf MCP installed. Refresh Cascade MCP settings.");
             Ok(())
         }
+        "vscode" | "code" => {
+            setup_vscode()?;
+            println!("VS Code MCP installed. Reload the window to pick up ctx.");
+            Ok(())
+        }
         "all" => {
             setup_claude()?;
             setup_cursor()?;
             setup_windsurf()?;
-            println!("Claude Code + Cursor + Windsurf installed. ctx doctor to verify.");
+            let _ = setup_vscode();
+            println!("Claude Code + Cursor + Windsurf + VS Code installed. ctx doctor to verify.");
             Ok(())
         }
         "wizard" => wizard(),
         other => {
-            anyhow::bail!("unknown target {other:?} (use claude, cursor, windsurf, all, or wizard)")
+            anyhow::bail!(
+                "unknown target {other:?} (use claude, cursor, windsurf, vscode, all, or wizard)"
+            )
         }
     }
 }
@@ -93,7 +101,7 @@ pub fn wizard() -> anyhow::Result<()> {
     let claude = detect_claude();
     let cursor = detect_cursor();
     let windsurf = detect_windsurf();
-    println!("[1/4] Detected");
+    println!("[1/5] Detected");
     println!("  {}  Claude Code", mark(claude));
     println!("  {}  Cursor", mark(cursor));
     println!("  {}  Windsurf", mark(windsurf));
@@ -101,7 +109,7 @@ pub fn wizard() -> anyhow::Result<()> {
     let interactive = io::stdin().is_terminal();
     let strategy = if interactive {
         println!();
-        println!("[2/4] Context budget");
+        println!("[2/5] Context budget");
         println!("  1. extreme        — fewer tokens, may drop detail");
         println!("  2. balanced       — recommended");
         println!("  3. conservative   — keep more of the log");
@@ -116,14 +124,33 @@ pub fn wizard() -> anyhow::Result<()> {
         }
     } else {
         println!();
-        println!("[2/4] Context budget: balanced (non-interactive)");
+        println!("[2/5] Context budget: balanced (non-interactive)");
         "balanced"
     };
     cfg.budget_strategy = strategy.into();
+
+    if interactive {
+        println!();
+        println!("[3/5] Auto-start dashboard at login? [y/N]");
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        cfg.dashboard_autostart = matches!(line.trim(), "y" | "Y" | "yes");
+        println!("[4/5] Auto snapshot every 24h? [y/N]");
+        line.clear();
+        io::stdin().read_line(&mut line)?;
+        cfg.auto_snapshot = matches!(line.trim(), "y" | "Y" | "yes");
+    } else {
+        println!();
+        println!("[3/5] Dashboard autostart: off (non-interactive)");
+        println!("[4/5] Auto snapshot: off (non-interactive)");
+    }
     cfg.save(&paths)?;
+    if cfg.dashboard_autostart {
+        let _ = crate::app::run(8741, false, true, false);
+    }
 
     println!();
-    println!("[3/4] Installing hooks");
+    println!("[5/5] Installing hooks");
     if claude {
         setup_claude()?;
         println!("  ✓  Claude Code");
@@ -141,7 +168,7 @@ pub fn wizard() -> anyhow::Result<()> {
     }
 
     println!();
-    println!("[4/4] Done");
+    println!("Done");
     println!("  ctx app · ctx doctor · ctx snapshot create");
     Ok(())
 }
@@ -240,6 +267,49 @@ fn setup_cursor() -> anyhow::Result<()> {
         .with_context(|| format!("merge mcpServers in {}", mcp_path.display()))?;
     write_json_atomic(&mcp_path, &mcp)?;
     println!("Installed Cursor hooks → {}", hooks_path.display());
+    Ok(())
+}
+
+fn setup_vscode() -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let candidates = [
+        home.join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("mcp.json"),
+        home.join(".config")
+            .join("Code")
+            .join("User")
+            .join("mcp.json"),
+        home.join("AppData")
+            .join("Roaming")
+            .join("Code")
+            .join("User")
+            .join("mcp.json"),
+    ];
+    let path = candidates
+        .iter()
+        .find(|p| p.parent().map(|d| d.exists()).unwrap_or(false))
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone());
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    let mut root = read_json_object(&path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+    let obj = root.as_object_mut().unwrap();
+    let servers = obj.entry("servers").or_insert_with(|| json!({}));
+    if let Some(map) = servers.as_object_mut() {
+        map.insert(
+            "ctx".into(),
+            json!({"type": "stdio", "command": ctx_bin(), "args": ["mcp"]}),
+        );
+    }
+    write_json_atomic(&path, &root)?;
+    println!("Installed VS Code MCP → {}", path.display());
     Ok(())
 }
 

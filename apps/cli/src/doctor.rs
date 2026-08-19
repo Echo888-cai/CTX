@@ -31,7 +31,7 @@ impl DoctorReport {
             .iter()
             .any(|c| !c.ok && matches!(c.name, "claude" | "cursor" | "windsurf" | "mcp"))
         {
-            lines.push("Next: ctx setup claude, cursor, or windsurf".into());
+            lines.push("Next: ctx setup claude, cursor, windsurf, or vscode".into());
         } else if self.checks.iter().any(|c| !c.ok && c.name == "database") {
             lines.push("Next: ctx init".into());
         } else {

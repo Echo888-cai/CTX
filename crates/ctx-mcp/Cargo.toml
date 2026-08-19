@@ -10,6 +10,7 @@ description = "CTX MCP server — page-in API (ctx_fetch, ctx_read, ctx_search, 
 ctx-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 ctx-store.workspace = true

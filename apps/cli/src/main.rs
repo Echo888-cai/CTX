@@ -1,4 +1,5 @@
 mod app;
+mod ci;
 mod demo;
 mod doctor;
 mod exec;
@@ -43,7 +44,7 @@ enum Commands {
     Doctor,
     /// Install hooks + MCP for a harness
     Setup {
-        /// claude | cursor | windsurf | all | wizard
+        /// claude | cursor | windsurf | vscode | all | wizard
         target: String,
         /// Interactive (or defaulted) first-run wizard
         #[arg(long)]
@@ -68,6 +69,8 @@ enum Commands {
         /// Rank mapped pages by task tokens
         #[arg(long)]
         task: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Search stored pages (page-fault retrieval)
     Search {
@@ -133,6 +136,13 @@ enum Commands {
         /// Required with --purge
         #[arg(long)]
         yes: bool,
+    },
+    /// Run a command through CTX and print a markdown report with ctx:// links
+    Ci {
+        #[arg(long)]
+        shell: bool,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
     },
     /// Print the binary version and any local copies
     Versions,
@@ -207,9 +217,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             std::process::exit(code);
         }
         Some(Commands::Why) => why::run(),
-        Some(Commands::Inspect { session, task }) => {
-            inspect::run(session.as_deref(), task.as_deref())
-        }
+        Some(Commands::Inspect {
+            session,
+            task,
+            json,
+        }) => inspect::run(session.as_deref(), task.as_deref(), json),
         Some(Commands::Search { query, limit }) => search::run(&query, limit),
         Some(Commands::Fetch { uri, query, full }) => {
             let rt = Runtime::open_default().context("open CTX store")?;
@@ -308,6 +320,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             SnapshotAction::Restore { id } => snapshot::restore(&id),
         },
         Some(Commands::Uninstall { purge, yes }) => uninstall::run(purge, yes),
+        Some(Commands::Ci { shell, command }) => ci::run(shell, command),
         Some(Commands::Versions) => snapshot::versions(),
         Some(Commands::Version { action }) => match action {
             VersionAction::List => snapshot::versions(),

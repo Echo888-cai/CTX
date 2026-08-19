@@ -1,0 +1,13 @@
+{
+  "name": "@ctx-labs/install",
+  "version": "0.2.0",
+  "description": "Install the CTX CLI from GitHub Releases",
+  "bin": {
+    "ctx-install": "./install.js"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Echo888-cai/CTX.git"
+  }
+}

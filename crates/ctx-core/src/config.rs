@@ -16,10 +16,13 @@ pub struct Config {
     /// Reserved: local embeddings. TF-IDF ranking is always on.
     #[serde(default)]
     pub enable_semantic: bool,
-    /// Built-in optimizer names, in order. Empty = default pipeline.
-    /// Entries ending in `.wasm` are reserved and skipped.
+    /// Built-in names and/or `{ "name", "path" }` plugins. Empty = default pipeline.
     #[serde(default)]
-    pub optimizers: Vec<String>,
+    pub optimizers: Vec<ctx_optimizer::OptimizerSpec>,
+    #[serde(default)]
+    pub dashboard_autostart: bool,
+    #[serde(default)]
+    pub auto_snapshot: bool,
 }
 
 fn default_true() -> bool {
@@ -44,6 +47,8 @@ impl Default for Config {
             budget_strategy: default_strategy(),
             enable_semantic: false,
             optimizers: Vec::new(),
+            dashboard_autostart: false,
+            auto_snapshot: false,
         }
     }
 }

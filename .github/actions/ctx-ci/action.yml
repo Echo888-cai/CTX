@@ -1,0 +1,35 @@
+name: CTX CI
+description: Run a command through CTX and comment ctx:// page links on the PR
+inputs:
+  command:
+    description: Shell command to run (virtualized through ctx exec)
+    required: false
+    default: cargo test
+  comment:
+    description: Post a PR comment with ctx:// URIs
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Run through CTX
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.ctx"
+        if ! command -v ctx >/dev/null 2>&1; then
+          echo "ctx not on PATH; install with Echo888-cai/CTX/.github/actions/setup-ctx"
+          exit 1
+        fi
+        ctx ci --shell -- ${{ inputs.command }} | tee /tmp/ctx-ci.md
+    - name: Comment ctx:// links
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "gh not available; skip comment"
+          exit 0
+        fi
+        gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/ctx-ci.md || true

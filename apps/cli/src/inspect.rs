@@ -1,9 +1,33 @@
 use ctx_core::{parse_task, Runtime, WorkingSet};
 
-pub fn run(session: Option<&str>, task: Option<&str>) -> anyhow::Result<()> {
+pub fn run(session: Option<&str>, task: Option<&str>, json: bool) -> anyhow::Result<()> {
     let rt = Runtime::open_default()?;
     let extra = task.map(parse_task).unwrap_or_default();
     let ws = WorkingSet::query(&rt.store, session, &extra)?;
+    if json {
+        let pages: Vec<serde_json::Value> = ws
+            .recent_pages
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "uri": p.uri,
+                    "layer": p.layer,
+                    "label": p.label,
+                    "tokens": p.tokens,
+                    "harness": p.harness,
+                    "frame": p.frame,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "task": ws.task,
+                "pages": pages,
+            })
+        );
+        return Ok(());
+    }
     println!("{}", ws.render());
     Ok(())
 }

@@ -9,6 +9,19 @@ use ctx_core::{format_why, Runtime, Snapshot, WorkingSet};
 const PROTOCOL: &str = "2024-11-05";
 
 pub fn serve(runtime: Runtime) -> std::io::Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async move {
+            tokio::task::spawn_blocking(move || serve_sync(runtime))
+                .await
+                .unwrap_or_else(|e| {
+                    Err(std::io::Error::other(e.to_string()))
+                })
+        })
+}
+
+fn serve_sync(runtime: Runtime) -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let mut reader = BufReader::new(stdin.lock());
     let mut stdout = std::io::stdout();

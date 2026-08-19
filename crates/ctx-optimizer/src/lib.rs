@@ -19,6 +19,7 @@ mod header;
 mod install;
 mod mcp;
 mod pipeline;
+mod plugin;
 mod shell;
 mod symbols;
 mod tokens;
@@ -39,7 +40,8 @@ pub use frames::{extract_frames, extract_map_hits, extract_maps, MapHit};
 pub use generic::GenericGuard;
 pub use header::prepend_command_exit;
 pub use mcp::{reduce_json_like, McpGuard};
-pub use pipeline::{OptimizeInput, OptimizeOutput, Pipeline};
+pub use pipeline::{OptimizeInput, OptimizeOutput, OptimizerSpec, Pipeline};
+pub use plugin::{run_wasm_bytes, PluginGuard};
 pub use shell::{reduce_shell, ShellGuard};
 pub use symbols::{
     collect_symbol_spans, slice_span, symbol_at_line, symbol_label, symbol_name, SymbolSpan,

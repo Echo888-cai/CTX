@@ -1,7 +1,9 @@
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
-use std::net::TcpListener;
+use std::io::ErrorKind;
 use std::process::Command;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 use anyhow::Context;
 use ctx_core::CtxPaths;
@@ -22,9 +24,19 @@ pub fn run(port: u16, open: bool, install: bool, uninstall: bool) -> anyhow::Res
         return install_service(port);
     }
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .thread_name("ctx-app")
+        .build()
+        .context("tokio runtime")?;
+    rt.block_on(serve(port, open))
+}
+
+async fn serve(port: u16, open: bool) -> anyhow::Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let url = format!("http://{addr}");
-    let listener = match TcpListener::bind(&addr) {
+    let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(err) if err.kind() == ErrorKind::AddrInUse => {
             eprintln!("CTX dashboard already running  {url}");
@@ -40,30 +52,63 @@ pub fn run(port: u16, open: bool, install: bool, uninstall: bool) -> anyhow::Res
     if open {
         open_browser(&url);
     }
-    for conn in listener.incoming() {
-        let mut stream = match conn {
+    maybe_auto_snapshot();
+    loop {
+        let (mut stream, _) = match listener.accept().await {
             Ok(s) => s,
             Err(err) => {
                 tracing::warn!(error = %err, "dashboard accept failed");
                 continue;
             }
         };
-        let mut buf = vec![0u8; 16_384];
-        let n = match stream.read(&mut buf) {
-            Ok(0) | Err(_) => continue,
-            Ok(n) => n,
-        };
-        let req = String::from_utf8_lossy(&buf[..n]);
-        let (method, path, query) = parse_req(&req);
-        let (status, content_type, body) = dispatch(method, path, query);
-        let resp = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        let _ = stream.write_all(resp.as_bytes());
-        let _ = stream.write_all(&body);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 32_768];
+            let n = match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (head, req_body) = match req.split_once("\r\n\r\n") {
+                Some(pair) => pair,
+                None => (req.as_ref(), ""),
+            };
+            let (method, path, query) = parse_req(head);
+            let (status, content_type, body) = dispatch_with(method, path, query, req_body);
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
+        });
     }
-    Ok(())
+}
+
+fn maybe_auto_snapshot() {
+    let Ok(paths) = ctx_core::CtxPaths::default_home() else {
+        return;
+    };
+    let cfg = ctx_core::Config::load(&paths);
+    if !cfg.auto_snapshot {
+        return;
+    }
+    let Ok(rt) = ctx_core::Runtime::open_default() else {
+        return;
+    };
+    let Ok(snaps) = rt.store.list_snapshots() else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if snaps
+        .iter()
+        .any(|s| now.saturating_sub(s.created_at) < 86_400)
+    {
+        return;
+    }
+    let _ = rt.store.create_snapshot(Some("auto"));
 }
 
 fn parse_req(req: &str) -> (&str, &str, &str) {
@@ -87,7 +132,17 @@ fn query_param<'a>(query: &'a str, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
+#[cfg(test)]
 fn dispatch(method: &str, path: &str, query: &str) -> (&'static str, &'static str, Vec<u8>) {
+    dispatch_with(method, path, query, "")
+}
+
+fn dispatch_with(
+    method: &str,
+    path: &str,
+    query: &str,
+    body: &str,
+) -> (&'static str, &'static str, Vec<u8>) {
     match (method, path) {
         ("GET", "/") | ("GET", "/index.html") => (
             "200 OK",
@@ -111,12 +166,103 @@ fn dispatch(method: &str, path: &str, query: &str) -> (&'static str, &'static st
         ("POST", "/api/resume") => json_ok(set_enabled(true)),
         ("POST", "/api/snapshot") => json_ok(snapshot_create()),
         ("POST", "/api/snapshot/restore") => json_ok(snapshot_restore(query_param(query, "id"))),
+        ("GET", "/api/config") => json_ok(config_get()),
+        ("POST", "/api/config") => json_ok(config_set(body)),
+        ("GET", "/api/pages") => json_ok(pages_payload()),
+        ("GET", "/api/inspect") => json_ok(inspect_payload()),
         ("GET", "/metrics") => (
             "200 OK",
             "text/plain; version=0.0.4; charset=utf-8",
             prometheus_text(),
         ),
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
+    }
+}
+
+fn config_get() -> serde_json::Value {
+    match ctx_core::CtxPaths::default_home() {
+        Ok(paths) => {
+            let cfg = ctx_core::Config::load(&paths);
+            serde_json::to_value(&cfg).unwrap_or(json!({"ok": false}))
+        }
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn config_set(body: &str) -> serde_json::Value {
+    let Ok(paths) = ctx_core::CtxPaths::default_home() else {
+        return json!({"ok": false, "error": "no home"});
+    };
+    let mut cfg = ctx_core::Config::load(&paths);
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return json!({"ok": false, "error": "invalid json"});
+    };
+    if let Some(b) = v.get("enabled").and_then(|x| x.as_bool()) {
+        cfg.enabled = b;
+    }
+    if let Some(s) = v.get("budget_strategy").and_then(|x| x.as_str()) {
+        cfg.budget_strategy = s.to_string();
+    }
+    if let Some(n) = v
+        .get("virtualize_threshold_tokens")
+        .and_then(|x| x.as_u64())
+    {
+        cfg.virtualize_threshold_tokens = n as u32;
+    }
+    if let Some(n) = v.get("large_file_tokens").and_then(|x| x.as_u64()) {
+        cfg.large_file_tokens = n as u32;
+    }
+    if let Some(b) = v.get("dashboard_autostart").and_then(|x| x.as_bool()) {
+        cfg.dashboard_autostart = b;
+    }
+    if let Some(b) = v.get("auto_snapshot").and_then(|x| x.as_bool()) {
+        cfg.auto_snapshot = b;
+    }
+    match cfg.save(&paths) {
+        Ok(()) => json!({"ok": true}),
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn pages_payload() -> serde_json::Value {
+    match ctx_core::Runtime::open_default() {
+        Ok(rt) => match rt.store.recent_pages(48) {
+            Ok(pages) => json!({
+                "ok": true,
+                "pages": pages.iter().map(|p| json!({
+                    "uri": p.uri,
+                    "kind": p.kind,
+                    "summary": p.summary,
+                    "raw_tokens": p.raw_tokens,
+                    "task": p.task,
+                    "harness": p.harness,
+                    "created_at": p.created_at,
+                })).collect::<Vec<_>>()
+            }),
+            Err(err) => json!({"ok": false, "error": err.to_string()}),
+        },
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn inspect_payload() -> serde_json::Value {
+    match ctx_core::Runtime::open_default() {
+        Ok(rt) => match ctx_core::WorkingSet::query(&rt.store, None, &[]) {
+            Ok(ws) => json!({
+                "ok": true,
+                "task": ws.task,
+                "pages": ws.recent_pages.iter().map(|p| json!({
+                    "uri": p.uri,
+                    "layer": p.layer,
+                    "label": p.label,
+                    "tokens": p.tokens,
+                    "harness": p.harness,
+                    "frame": p.frame,
+                })).collect::<Vec<_>>()
+            }),
+            Err(err) => json!({"ok": false, "error": err.to_string()}),
+        },
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
     }
 }
 
@@ -147,6 +293,7 @@ fn setup_target(target: &str) -> Value {
         "claude" | "claude-code" => setup::setup("claude"),
         "cursor" => setup::setup("cursor"),
         "windsurf" => setup::setup("windsurf"),
+        "vscode" | "code" => setup::setup("vscode"),
         _ => setup::init(),
     };
     match result {
@@ -351,6 +498,9 @@ mod tests {
         assert!(PAGE.contains("优化器拆分"));
         assert!(PAGE.contains("创建快照"));
         assert!(PAGE.contains("实时日志"));
+        assert!(PAGE.contains("/api/config"));
+        assert!(PAGE.contains("view-settings"));
+        assert!(PAGE.contains("HOT / WARM / COLD"));
     }
 
     #[test]

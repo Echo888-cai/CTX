@@ -41,6 +41,13 @@ pub trait Optimizer: Send + Sync {
     fn apply(&self, input: &OptimizeInput<'_>) -> Option<OptimizeOutput>;
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum OptimizerSpec {
+    Name(String),
+    Plugin { name: String, path: String },
+}
+
 pub struct Pipeline {
     inner: Vec<Box<dyn Optimizer>>,
 }
@@ -57,32 +64,51 @@ impl Pipeline {
         }
     }
 
-    /// Built-in names from settings.json `optimizers`. Unknown / .wasm entries
-    /// are skipped (WASM plugins are reserved; they are not executed).
     pub fn from_names(names: &[String]) -> Self {
-        if names.is_empty() {
+        let specs: Vec<OptimizerSpec> = names.iter().cloned().map(OptimizerSpec::Name).collect();
+        Self::from_specs(&specs)
+    }
+
+    pub fn from_specs(specs: &[OptimizerSpec]) -> Self {
+        if specs.is_empty() {
             return Self::v0();
         }
-        let mut inner: Vec<Box<dyn Optimizer>> = Vec::new();
-        for name in names {
-            let n = name.trim();
-            if n.is_empty() {
-                continue;
-            }
-            if n.ends_with(".wasm") {
-                continue;
-            }
-            match n {
-                "shell" => inner.push(Box::new(crate::ShellGuard)),
-                "file" | "file-read" | "read" => inner.push(Box::new(crate::ReadGuard)),
-                "mcp" => inner.push(Box::new(crate::McpGuard)),
-                "generic" => inner.push(Box::new(crate::GenericGuard)),
-                _ => {}
+        let mut builtins: Vec<Box<dyn Optimizer>> = Vec::new();
+        let mut plugins: Vec<Box<dyn Optimizer>> = Vec::new();
+        for spec in specs {
+            match spec {
+                OptimizerSpec::Name(name) => {
+                    let n = name.trim();
+                    if n.is_empty() {
+                        continue;
+                    }
+                    if looks_like_plugin_path(n) {
+                        plugins.push(Box::new(crate::PluginGuard::new("plugin", n)));
+                        continue;
+                    }
+                    match n {
+                        "shell" => builtins.push(Box::new(crate::ShellGuard)),
+                        "file" | "file-read" | "read" => builtins.push(Box::new(crate::ReadGuard)),
+                        "mcp" => builtins.push(Box::new(crate::McpGuard)),
+                        "generic" => builtins.push(Box::new(crate::GenericGuard)),
+                        other => plugins.push(Box::new(crate::PluginGuard::new(other, other))),
+                    }
+                }
+                OptimizerSpec::Plugin { name, path } => {
+                    plugins.push(Box::new(crate::PluginGuard::new(name, path)));
+                }
             }
         }
-        if inner.is_empty() {
+        let inner = if builtins.is_empty() && !plugins.is_empty() {
+            let mut v = Self::v0().inner;
+            v.extend(plugins);
+            v
+        } else if builtins.is_empty() {
             return Self::v0();
-        }
+        } else {
+            builtins.extend(plugins);
+            builtins
+        };
         Self { inner }
     }
 
@@ -109,6 +135,10 @@ impl Pipeline {
         }
         best.filter(|out| out.delivered_tokens + 40 < input.raw_tokens)
     }
+}
+
+fn looks_like_plugin_path(n: &str) -> bool {
+    n.ends_with(".wasm") || n.contains('/') || n.contains('\\') || std::path::Path::new(n).exists()
 }
 
 #[cfg(test)]
@@ -145,7 +175,10 @@ mod tests {
     fn from_names_can_disable_generic() {
         let p = Pipeline::from_names(&["shell".into()]);
         assert_eq!(p.guard_count(), 1);
-        let unknown = Pipeline::from_names(&["nope".into(), "missing.wasm".into()]);
-        assert_eq!(unknown.guard_count(), 4, "fallback to v0");
+        let plugins_only = Pipeline::from_specs(&[OptimizerSpec::Plugin {
+            name: "custom".into(),
+            path: "custom.wasm".into(),
+        }]);
+        assert_eq!(plugins_only.guard_count(), 5, "plugins append to v0");
     }
 }
