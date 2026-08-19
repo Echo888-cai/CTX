@@ -14,6 +14,7 @@ use crate::status;
 
 const PAGE: &str = include_str!("app.html");
 const WORDMARK: &[u8] = include_bytes!("assets/ctx-wordmark.png");
+#[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "ai.ctx.dashboard";
 
 pub fn run(port: u16, open: bool, install: bool, uninstall: bool) -> anyhow::Result<()> {
@@ -214,6 +215,11 @@ fn config_set(body: &str) -> serde_json::Value {
     }
     if let Some(b) = v.get("dashboard_autostart").and_then(|x| x.as_bool()) {
         cfg.dashboard_autostart = b;
+        if b {
+            let _ = install_service(8741);
+        } else {
+            let _ = uninstall_service();
+        }
     }
     if let Some(b) = v.get("auto_snapshot").and_then(|x| x.as_bool()) {
         cfg.auto_snapshot = b;
@@ -505,6 +511,7 @@ mod tests {
         assert!(PAGE.contains("实时日志"));
         assert!(PAGE.contains("/api/config"));
         assert!(PAGE.contains("view-settings"));
+        assert!(PAGE.contains("cfg-autostart"));
         assert!(PAGE.contains("HOT / WARM / COLD"));
     }
 

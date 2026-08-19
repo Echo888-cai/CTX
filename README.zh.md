@@ -36,10 +36,20 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-一行。没有 Rust 会先装 rustup。
+先下预编译包。没有对应二进制才装 Rust。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
+```
+
+其它渠道：
+
+```bash
+brew install --formula https://raw.githubusercontent.com/Echo888-cai/CTX/main/dist/homebrew/ctx.rb
+
+npx @ctx-labs/install
+
+docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ghcr.io/echo888-cai/ctx status
 ```
 
 然后：
@@ -47,6 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | b
 ```bash
 ctx app                 # 仪表盘：今天挡在模型外面的 token
 ctx app --install-service   # 可选：登录后自动开
+ctx setup --wizard      # 探测 harness，选预算
 ```
 
 最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
@@ -58,7 +69,7 @@ bash install.sh
 # 或
 cargo install --path apps/cli --locked --force
 ctx init
-ctx setup all    # Claude Code + Cursor
+ctx setup all    # Claude、Cursor、Windsurf、VS Code、Continue、JetBrains、Aider、Codex
 ```
 
 ## 模型看到什么
@@ -93,9 +104,9 @@ ctx://shell/9ba72f3c#auth::login  18241→412
 
 | 层 | 做什么 |
 |---|---|
-| 确定性削减 | 剥 ANSI、通过的测试、进度条、git/npm/rg 噪音。解析器，不是模型。 |
+| 确定性削减 | 剥 ANSI、通过的测试、进度条、git/npm/rg 噪音。解析器，不是模型。可挂 WASM / 命令插件。 |
 | 结构虚拟化 | 字节进内容寻址 store。模型拿到 handle。 |
-| 语义 working set | 按任务 token 映射页。跨 harness。Compact 后重新映射。 |
+| 语义 working set | 按任务 token（TF-IDF）映射页。跨 harness。Compact 后重新映射。 |
 
 细节：[docs/architecture.md](docs/architecture.md)
 
@@ -105,10 +116,28 @@ ctx://shell/9ba72f3c#auth::login  18241→412
 |---|---|
 | **Claude Code** | 原地替换工具输出（`updatedToolOutput`）。 |
 | **Cursor** | shell 改写成 `ctx exec`。MCP 输出可替换。大文件 → `ctx_read`。 |
+| **Windsurf** | MCP，形状同 Cursor。 |
+| **VS Code / Copilot** | 扩展 + 用户/工作区 MCP。状态栏显示少进模型的 token。 |
+| **Continue.dev** | `~/.continue/mcpServers/ctx.yaml` |
+| **JetBrains AI** | IDE / `.idea` 的 MCP json。 |
+| **Aider** | `~/.ctx/bin/aider-ctx` 包装 `ctx exec -- aider`。 |
+| **Codex CLI** | `~/.codex/config.toml` 里的 `[mcp_servers.ctx]`。 |
 
 ```bash
 ctx setup claude
 ctx setup cursor
+ctx setup vscode
+ctx doctor
+```
+
+## 第二天
+
+```bash
+ctx inspect --json          # HOT / WARM / COLD
+ctx snapshot create
+ctx version pin
+ctx version rollback
+ctx ci --shell -- cargo test
 ```
 
 ## 自测（本仓库）

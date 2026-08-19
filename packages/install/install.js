@@ -13,19 +13,24 @@ const pipe = promisify(pipeline);
 const VERSION = process.env.CTX_VERSION || "0.2.0";
 const REPO = "Echo888-cai/CTX";
 
-function target() {
+function targets() {
   const plat = os.platform();
   const arch = os.arch();
-  if (plat === "darwin" && arch === "arm64") return "aarch64-apple-darwin";
-  if (plat === "darwin") return "x86_64-apple-darwin";
-  if (plat === "linux" && arch === "arm64") return "aarch64-unknown-linux-gnu";
-  if (plat === "linux") return "x86_64-unknown-linux-gnu";
+  if (plat === "darwin" && arch === "arm64") return ["aarch64-apple-darwin"];
+  if (plat === "darwin") return ["x86_64-apple-darwin"];
+  if (plat === "linux" && arch === "arm64") return ["aarch64-unknown-linux-gnu"];
+  if (plat === "linux") return ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"];
+  if (plat === "win32") return ["x86_64-pc-windows-msvc"];
   throw new Error(`unsupported ${plat}-${arch}`);
 }
 
 function destDir() {
-  const home = os.homedir();
-  const dir = path.join(home, ".local", "bin");
+  if (os.platform() === "win32") {
+    const dir = path.join(os.homedir(), "AppData", "Local", "ctx", "bin");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const dir = path.join(os.homedir(), ".local", "bin");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -49,27 +54,50 @@ function download(url, file) {
   });
 }
 
-async function main() {
-  const t = target();
-  const url = `https://github.com/${REPO}/releases/download/v${VERSION}/ctx-${t}.tar.gz`;
+function cargoFallback() {
+  console.error("prebuilt missing; falling back to cargo install");
+  const r = spawnSync(
+    "cargo",
+    ["install", "--git", `https://github.com/${REPO}`, "--locked", "--force", "ctx-cli"],
+    { stdio: "inherit" }
+  );
+  process.exit(r.status || 1);
+}
+
+async function installTarget(t) {
+  const win = t.includes("windows");
+  const url = win
+    ? `https://github.com/${REPO}/releases/download/v${VERSION}/ctx-${t}.exe`
+    : `https://github.com/${REPO}/releases/download/v${VERSION}/ctx-${t}.tar.gz`;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctx-"));
-  const tar = path.join(tmp, "ctx.tar.gz");
-  try {
-    await download(url, tar);
-  } catch (err) {
-    console.error("prebuilt missing; falling back to cargo install");
-    const r = spawnSync("cargo", ["install", "--git", `https://github.com/${REPO}`, "--locked", "--force", "ctx-cli"], {
-      stdio: "inherit",
-    });
-    process.exit(r.status || 1);
+  const archive = path.join(tmp, win ? "ctx.exe" : "ctx.tar.gz");
+  await download(url, archive);
+  const dest = path.join(destDir(), win ? "ctx.exe" : "ctx");
+  if (win) {
+    fs.copyFileSync(archive, dest);
+  } else {
+    const r = spawnSync("tar", ["-xzf", archive, "-C", tmp], { stdio: "inherit" });
+    if (r.status !== 0) throw new Error("tar failed");
+    const names = fs.readdirSync(tmp);
+    const binName = names.find((n) => n.startsWith("ctx") && !n.endsWith(".tar.gz")) || "ctx";
+    fs.copyFileSync(path.join(tmp, binName), dest);
+    fs.chmodSync(dest, 0o755);
   }
-  const r = spawnSync("tar", ["-xzf", tar, "-C", tmp], { stdio: "inherit" });
-  if (r.status !== 0) process.exit(r.status || 1);
-  const names = fs.readdirSync(tmp);
-  const binName = names.find((n) => n.startsWith("ctx") && !n.endsWith(".tar.gz")) || "ctx";
-  const dest = path.join(destDir(), "ctx");
-  fs.copyFileSync(path.join(tmp, binName), dest);
-  fs.chmodSync(dest, 0o755);
+  return dest;
+}
+
+async function main() {
+  const list = targets();
+  let dest;
+  for (const t of list) {
+    try {
+      dest = await installTarget(t);
+      break;
+    } catch (err) {
+      console.error(`${t}: ${err.message}`);
+    }
+  }
+  if (!dest) cargoFallback();
   console.log(`installed ${dest}`);
   spawnSync(dest, ["init"], { stdio: "inherit" });
 }

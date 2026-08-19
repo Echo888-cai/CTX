@@ -4,17 +4,18 @@ CTX is a **context runtime**, not a plugin. Harnesses dump tool output into the 
 
 ```text
 Claude Code ──┐
-              │  hooks
-Cursor ───────┼──────────►  ctx
-              │              │
-              │     ┌────────┼────────┐
-              │     │        │        │
-              │   Store    Pager   Optimizer
-              │     │        │        │
-              │     └────────┼────────┘
-              │              │
-              └─────────►  MCP
-                    ctx_fetch / ctx_read / ctx_search
+Cursor ───────┤
+Windsurf ─────┤  hooks / MCP / ctx exec
+Continue ─────┼──────────►  ctx
+JetBrains ────┤              │
+VS Code ──────┤     ┌────────┼────────┐
+Aider / Codex ┘     │        │        │
+                    │   Store    Pager   Optimizer
+                    │     │        │        │
+                    │     └────────┼────────┘
+                    │              │
+                    └─────────►  MCP
+                          ctx_fetch / ctx_read / ctx_search
 ```
 
 ## Principles
@@ -29,13 +30,13 @@ No cloud. No extra API tokens. No LLM summarizer.
 | Crate | Job |
 |---|---|
 | `ctx-protocol` | Harness-agnostic events, `ctx://` URIs, tool kinds |
-| `ctx-store` | SQLite + BLAKE3 + zstd. Pages, frames, FTS, fingerprints |
-| `ctx-optimizer` | Deterministic reducers (shell / file / mcp / duplicate / CoW) |
-| `ctx-pager` | HOT / WARM / COLD clock + task-token mapped set |
+| `ctx-store` | SQLite + BLAKE3 + zstd. mmap blobs, WAL write + r2d2 `query_only` reads, FTS, bloom, snapshots |
+| `ctx-optimizer` | Deterministic reducers (shell / file / mcp / duplicate / CoW) + WASM/command plugins |
+| `ctx-pager` | HOT / WARM / COLD clock + TF-IDF mapped set + prefetch |
 | `ctx-core` | Ingest, hooks, fetch, search |
 | `ctx-mcp` | stdio MCP: `ctx_fetch`, `ctx_read`, `ctx_search`, `ctx_inspect`, `ctx_why` |
 | `ctx-telemetry` | `ctx status` / `ctx why` snapshots |
-| `apps/cli` | `ctx` binary |
+| `apps/cli` | `ctx` binary, localhost dashboard, `ctx ci` |
 
 Adapters convert Claude `PostToolUse` / Cursor `postToolUse` into one `CtxEvent`. Core does not know harness JSON.
 
@@ -46,9 +47,14 @@ Adapters convert Claude `PostToolUse` / Cursor `postToolUse` into one `CtxEvent`
   ctx.db         schema v6 — pages, frames, sessions, observations, FTS5
   store/xx/yy.zst
   config.json
+  snapshots/
+  versions/
+  bin/           aider-ctx wrapper
 ```
 
-A page is not a blob. Ingest builds a **frame table** (failed tests, rustc errors, symbols). `ctx://shell/abc#auth::login` is a virtual address: fetch walks the table. Search walks frames, then FTS. Identical payloads share a BLAKE3 page; whitespace-normalized near-dups increment a fingerprint.
+A page is not a blob. Ingest builds a **frame table** (failed tests, rustc errors, symbols) only when the payload is large enough (or is a file). `ctx://shell/abc#auth::login` is a virtual address: fetch walks the table. Search checks an in-memory bloom filter, then frames, then FTS. Identical payloads share a BLAKE3 page; whitespace-normalized near-dups increment a fingerprint.
+
+`ingest()` commits blob + page + observation in one WAL transaction. Blobs are mmap'd on read. zstd level follows size and kind. Dashboard / MCP / search take connections from an r2d2 pool with `query_only=1`; ingest holds the write connection.
 
 ## Pager
 
@@ -67,6 +73,9 @@ SessionStart greets with a tiny mapped set. Compact cannot inject Claude `additi
 | DuplicateGuard | Exact and whitespace-normalized repeats |
 | MCPGuard | Schema-aware JSON reduction |
 | GenericGuard | Head/tail + error lines |
+| PluginGuard | User WASM (`optimize(i32)->i32`) or a 400ms stdin/stdout command |
+
+`config.json` `optimizers` is a list of names (`"shell"`) or `{ "name", "path" }`. Empty = v0 pipeline. Plugins-only appends on top of v0. ABI example: `adapters/optimizer/identity.wat`.
 
 Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are denied and routed to `ctx_read`.
 
@@ -74,7 +83,19 @@ Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are den
 
 **Claude Code:** `updatedToolOutput` replaces what the model sees. Shell, Read, MCP. `UserPromptSubmit` extracts task tokens.
 
-**Cursor:** `preToolUse` rewrites shell to `ctx exec --shell -- '…'`. MCP via `updated_mcp_tool_output`. Native file/shell cannot be replaced in-place; large reads deny + `ctx_read`.
+**Cursor / Windsurf / Continue / Copilot / JetBrains / Codex:** MCP stdio `ctx mcp`. Cursor also rewrites shell to `ctx exec --shell -- '…'`. Native file/shell cannot be replaced in-place; large reads deny + `ctx_read`.
+
+**Aider:** `ctx setup aider` writes `~/.ctx/bin/aider-ctx` → `ctx exec -- aider`.
+
+`ctx setup --wizard` detects these, picks a budget, and can install the dashboard as a login service.
+
+## Dashboard and ops
+
+`ctx app` is a localhost SPA on `127.0.0.1:8741`: avoided-token KPIs, 7-day trend, optimizer split, HOT/WARM/COLD, config, pause/resume/snapshot. `/metrics` is Prometheus text.
+
+`ctx snapshot` checkpoints SQLite. `ctx version pin|use|rollback` keeps copies under `~/.ctx/versions/`. `ctx uninstall --purge --yes` strips hooks and archives `~/.ctx`.
+
+CI: `.github/actions/setup-ctx` plus `ctx ci --shell -- <cmd>` (markdown with `ctx://` links). Release matrix: macOS arm64/x86_64, Linux gnu/musl, Windows msvc.
 
 ## Non-goals
 

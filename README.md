@@ -36,10 +36,21 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-One line. Rust is installed if you don't have it.
+Prebuilt first. Rust only if GitHub has no binary for your machine.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
+```
+
+Other channels:
+
+```bash
+# Homebrew (copy dist/homebrew/ctx.rb into a tap, or)
+brew install --formula https://raw.githubusercontent.com/Echo888-cai/CTX/main/dist/homebrew/ctx.rb
+
+npx @ctx-labs/install
+
+docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ghcr.io/echo888-cai/ctx status
 ```
 
 Then:
@@ -47,6 +58,7 @@ Then:
 ```bash
 ctx app                 # dashboard — today's tokens kept out of the model
 ctx app --install-service   # optional: start it at login
+ctx setup --wizard      # detect harnesses and pick a budget
 ```
 
 The big number is **avoided tokens**. Raw context stayed on disk. `ctx status` is the same data in the terminal.
@@ -58,7 +70,7 @@ bash install.sh
 # or
 cargo install --path apps/cli --locked --force
 ctx init
-ctx setup all    # Claude Code + Cursor
+ctx setup all    # Claude, Cursor, Windsurf, VS Code, Continue, JetBrains, Aider, Codex
 ```
 
 ## What the model sees
@@ -93,9 +105,9 @@ Yesterday's Claude session and today's Cursor session share one page table. Page
 
 | Layer | What it does |
 |---|---|
-| Deterministic reduction | Strip ANSI, passing tests, progress bars, git/npm/rg noise. Parsers, not a model. |
+| Deterministic reduction | Strip ANSI, passing tests, progress bars, git/npm/rg noise. Parsers, not a model. Plugins: WASM or a command. |
 | Structural virtualization | Bytes go to a content-addressed store. Model gets a handle. |
-| Semantic working set | Map pages by task tokens. Cross-harness. Compact remaps. |
+| Semantic working set | Map pages by task tokens (TF-IDF). Cross-harness. Compact remaps. |
 
 Details: [docs/architecture.md](docs/architecture.md)
 
@@ -105,10 +117,28 @@ Details: [docs/architecture.md](docs/architecture.md)
 |---|---|
 | **Claude Code** | Replaces tool output in place (`updatedToolOutput`). |
 | **Cursor** | Wraps shell as `ctx exec`. MCP output replaced. Large files → `ctx_read`. |
+| **Windsurf** | MCP, same shape as Cursor. |
+| **VS Code / Copilot** | Extension + user/workspace MCP. Status bar shows avoided tokens. |
+| **Continue.dev** | `~/.continue/mcpServers/ctx.yaml` |
+| **JetBrains AI** | MCP json for the IDE / `.idea`. |
+| **Aider** | `~/.ctx/bin/aider-ctx` wraps `ctx exec -- aider`. |
+| **Codex CLI** | `[mcp_servers.ctx]` in `~/.codex/config.toml`. |
 
 ```bash
 ctx setup claude
 ctx setup cursor
+ctx setup vscode
+ctx doctor
+```
+
+## Day two
+
+```bash
+ctx inspect --json          # HOT / WARM / COLD
+ctx snapshot create
+ctx version pin
+ctx version rollback
+ctx ci --shell -- cargo test
 ```
 
 ## Dogfood (this repo)
