@@ -400,6 +400,10 @@
         <div class="toolbar">
           <button class="primary" type="button" id="setup-claude">安装 Claude 钩子</button>
           <button class="primary" type="button" id="setup-cursor">安装 Cursor 钩子</button>
+          <button class="primary" type="button" id="setup-windsurf">安装 Windsurf</button>
+          <button class="primary" type="button" id="setup-vscode">安装 VS Code / Copilot</button>
+          <button class="primary" type="button" id="setup-continue">安装 Continue</button>
+          <button class="primary" type="button" id="setup-jetbrains">安装 JetBrains</button>
           <button type="button" id="pause">暂停</button>
           <button type="button" id="snap">创建快照</button>
         </div>
@@ -672,6 +676,10 @@ document.querySelectorAll(".tabs [role=tab]").forEach((button) => { button.oncli
 $("more").onclick = () => $("models").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
 $("setup-claude").onclick = () => act("/api/setup?target=claude");
 $("setup-cursor").onclick = () => act("/api/setup?target=cursor");
+$("setup-windsurf").onclick = () => act("/api/setup?target=windsurf");
+$("setup-vscode").onclick = () => act("/api/setup?target=vscode");
+$("setup-continue").onclick = () => act("/api/setup?target=continue");
+$("setup-jetbrains").onclick = () => act("/api/setup?target=jetbrains");
 $("pause").onclick = () => {
   const on = !(state.data && state.data.enabled === false);
   act(on ? "/api/pause" : "/api/resume");

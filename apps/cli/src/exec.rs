@@ -121,6 +121,19 @@ fn detect_harness() -> Harness {
         || std::env::var("CODEIUM_SESSION").is_ok()
     {
         Harness::Windsurf
+    } else if std::env::var("CONTINUE_SESSION_ID").is_ok()
+        || std::env::var("CONTINUE_GLOBAL_DIR").is_ok()
+    {
+        Harness::Continue
+    } else if std::env::var("AIDER").is_ok() || std::env::var("AIDER_MODEL").is_ok() {
+        Harness::Aider
+    } else if std::env::var("CODEX_HOME").is_ok() || std::env::var("CODEX_SESSION").is_ok() {
+        Harness::Codex
+    } else if std::env::var("GITHUB_COPILOT").is_ok() || std::env::var("COPILOT_MODEL").is_ok() {
+        Harness::Copilot
+    } else if std::env::var("JETBRAINS_INTELLIJ_ID").is_ok() || std::env::var("JB_PRODUCT").is_ok()
+    {
+        Harness::JetBrains
     } else {
         Harness::Unknown
     }

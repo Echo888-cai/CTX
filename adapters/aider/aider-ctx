@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Run aider through CTX so long tool dumps stay on disk.
+exec ctx exec -- aider "$@"

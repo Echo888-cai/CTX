@@ -26,11 +26,13 @@ impl DoctorReport {
         lines.push(String::new());
         if self.checks.iter().any(|c| !c.ok && c.name == "binary") {
             lines.push("Next: cargo install --path apps/cli".into());
-        } else if self
-            .checks
-            .iter()
-            .any(|c| !c.ok && matches!(c.name, "claude" | "cursor" | "windsurf" | "mcp"))
-        {
+        } else if self.checks.iter().any(|c| {
+            !c.ok
+                && matches!(
+                    c.name,
+                    "claude" | "cursor" | "windsurf" | "vscode" | "continue" | "jetbrains" | "mcp"
+                )
+        }) {
             lines.push("Next: ctx setup claude, cursor, windsurf, or vscode".into());
         } else if self.checks.iter().any(|c| !c.ok && c.name == "database") {
             lines.push("Next: ctx init".into());
@@ -58,6 +60,9 @@ pub fn collect() -> anyhow::Result<DoctorReport> {
             claude_hooks_check(home.as_deref()),
             cursor_hooks_check(home.as_deref()),
             windsurf_mcp_check(home.as_deref()),
+            vscode_mcp_check(home.as_deref()),
+            continue_mcp_check(home.as_deref()),
+            jetbrains_mcp_check(home.as_deref()),
             mcp_check(home.as_deref()),
         ],
     })
@@ -232,6 +237,143 @@ fn windsurf_mcp_check(home: Option<&Path>) -> Check {
     }
 }
 
+fn vscode_mcp_check(home: Option<&Path>) -> Check {
+    let Some(home) = home else {
+        return Check {
+            ok: true,
+            name: "vscode",
+            detail: "no home directory".into(),
+        };
+    };
+    let present = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .is_dir()
+        || home.join(".config").join("Code").is_dir()
+        || home.join("AppData").join("Roaming").join("Code").is_dir();
+    if !present {
+        return Check {
+            ok: true,
+            name: "vscode",
+            detail: "not installed".into(),
+        };
+    }
+    let candidates = [
+        home.join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("mcp.json"),
+        home.join(".config")
+            .join("Code")
+            .join("User")
+            .join("mcp.json"),
+        home.join("AppData")
+            .join("Roaming")
+            .join("Code")
+            .join("User")
+            .join("mcp.json"),
+    ];
+    for path in &candidates {
+        if let Ok(Some(v)) = read_object(path) {
+            if v.get("servers").and_then(|s| s.get("ctx")).is_some() || mcp_registered(&v) {
+                return Check {
+                    ok: true,
+                    name: "vscode",
+                    detail: path.display().to_string(),
+                };
+            }
+        }
+    }
+    Check {
+        ok: false,
+        name: "vscode",
+        detail: "mcp not registered — ctx setup vscode".into(),
+    }
+}
+
+fn continue_mcp_check(home: Option<&Path>) -> Check {
+    let Some(home) = home else {
+        return Check {
+            ok: true,
+            name: "continue",
+            detail: "no home directory".into(),
+        };
+    };
+    if !home.join(".continue").is_dir() {
+        return Check {
+            ok: true,
+            name: "continue",
+            detail: "not installed".into(),
+        };
+    }
+    let path = home.join(".continue").join("mcpServers").join("ctx.yaml");
+    if path.is_file() {
+        Check {
+            ok: true,
+            name: "continue",
+            detail: path.display().to_string(),
+        }
+    } else {
+        Check {
+            ok: false,
+            name: "continue",
+            detail: "no ctx.yaml — ctx setup continue".into(),
+        }
+    }
+}
+
+fn jetbrains_mcp_check(home: Option<&Path>) -> Check {
+    let Some(home) = home else {
+        return Check {
+            ok: true,
+            name: "jetbrains",
+            detail: "no home directory".into(),
+        };
+    };
+    let present = home
+        .join("Library")
+        .join("Application Support")
+        .join("JetBrains")
+        .is_dir()
+        || home.join(".config").join("JetBrains").is_dir()
+        || home
+            .join("AppData")
+            .join("Roaming")
+            .join("JetBrains")
+            .is_dir();
+    if !present {
+        return Check {
+            ok: true,
+            name: "jetbrains",
+            detail: "not installed".into(),
+        };
+    }
+    let path = home
+        .join("Library")
+        .join("Application Support")
+        .join("JetBrains")
+        .join("mcp.json");
+    let alt = home.join(".config").join("JetBrains").join("mcp.json");
+    for candidate in [&path, &alt] {
+        if let Ok(Some(v)) = read_object(candidate) {
+            if mcp_registered(&v) {
+                return Check {
+                    ok: true,
+                    name: "jetbrains",
+                    detail: candidate.display().to_string(),
+                };
+            }
+        }
+    }
+    Check {
+        ok: false,
+        name: "jetbrains",
+        detail: "mcp not registered — ctx setup jetbrains".into(),
+    }
+}
+
 fn mcp_check(home: Option<&Path>) -> Check {
     let Some(home) = home else {
         return Check {
@@ -277,6 +419,14 @@ fn label_for(path: &Path) -> String {
         "cursor".into()
     } else if s.contains("windsurf") {
         "windsurf".into()
+    } else if s.contains("continue") {
+        "continue".into()
+    } else if s.contains("JetBrains") {
+        "jetbrains".into()
+    } else if s.contains(".codex") {
+        "codex".into()
+    } else if s.contains("/Code/") || s.contains("\\Code\\") {
+        "vscode".into()
     } else if s.ends_with(".claude.json") {
         "claude.json".into()
     } else {

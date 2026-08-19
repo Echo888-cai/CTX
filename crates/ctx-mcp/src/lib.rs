@@ -15,9 +15,7 @@ pub fn serve(runtime: Runtime) -> std::io::Result<()> {
         .block_on(async move {
             tokio::task::spawn_blocking(move || serve_sync(runtime))
                 .await
-                .unwrap_or_else(|e| {
-                    Err(std::io::Error::other(e.to_string()))
-                })
+                .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
         })
 }
 

@@ -54,18 +54,8 @@ resolve_src() {
 
 main() {
 
-try_prebuilt() {
-  local os arch target url tmp
-  os="$(uname -s)"
-  arch="$(uname -m)"
-  case "$os-$arch" in
-    Darwin-arm64) target="aarch64-apple-darwin" ;;
-    Darwin-x86_64) target="x86_64-apple-darwin" ;;
-    Linux-x86_64) target="x86_64-unknown-linux-gnu" ;;
-    Linux-aarch64) target="aarch64-unknown-linux-gnu" ;;
-    *) return 1 ;;
-  esac
-  command -v curl >/dev/null 2>&1 || return 1
+fetch_prebuilt() {
+  local target="$1" url tmp
   url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
   tmp="$(mktemp -d)"
   if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
@@ -85,6 +75,22 @@ try_prebuilt() {
   fi
   rm -rf "$tmp"
   return 1
+}
+
+try_prebuilt() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  command -v curl >/dev/null 2>&1 || return 1
+  case "$os-$arch" in
+    Darwin-arm64) fetch_prebuilt aarch64-apple-darwin ;;
+    Darwin-x86_64) fetch_prebuilt x86_64-apple-darwin ;;
+    Linux-x86_64)
+      fetch_prebuilt x86_64-unknown-linux-gnu || fetch_prebuilt x86_64-unknown-linux-musl
+      ;;
+    Linux-aarch64) fetch_prebuilt aarch64-unknown-linux-gnu ;;
+    *) return 1 ;;
+  esac
 }
 
   if try_prebuilt; then

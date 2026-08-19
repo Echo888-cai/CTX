@@ -68,6 +68,7 @@ pub fn versions() -> anyhow::Result<()> {
     println!();
     println!("Pin this binary:   ctx version pin");
     println!("Switch binary:     ctx version use <version>");
+    println!("Binary rollback:   ctx version rollback");
     println!("Data rollback:     ctx snapshot restore <id>");
     Ok(())
 }
@@ -129,14 +130,60 @@ Pin first: ctx version pin",
             let _ = std::fs::remove_file(&tmp);
         }
     }
+    remember_previous(&paths, env!("CARGO_PKG_VERSION"), id)?;
     println!("now using {id}");
     println!("restart shells and IDE hooks so they pick up the binary");
     Ok(())
 }
 
+fn previous_path(paths: &CtxPaths) -> std::path::PathBuf {
+    paths.versions_dir().join("PREVIOUS")
+}
+
+fn remember_previous(paths: &CtxPaths, current: &str, next: &str) -> anyhow::Result<()> {
+    if current == next {
+        return Ok(());
+    }
+    std::fs::create_dir_all(paths.versions_dir())?;
+    std::fs::write(previous_path(paths), current)?;
+    Ok(())
+}
+
+pub fn rollback() -> anyhow::Result<()> {
+    let paths = CtxPaths::default_home()?;
+    let prev = previous_path(&paths);
+    let id = if prev.is_file() {
+        std::fs::read_to_string(&prev)?.trim().to_string()
+    } else {
+        anyhow::bail!(
+            "no previous version recorded
+Pin two versions, then: ctx version use <older>"
+        );
+    };
+    if id.is_empty() {
+        anyhow::bail!("PREVIOUS is empty");
+    }
+    use_version(&id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remember_previous_skips_same_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = CtxPaths::from_root(tmp.path().to_path_buf());
+        remember_previous(&paths, "0.2.0", "0.2.0").unwrap();
+        assert!(!previous_path(&paths).exists());
+        remember_previous(&paths, "0.1.0", "0.2.0").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(previous_path(&paths))
+                .unwrap()
+                .trim(),
+            "0.1.0"
+        );
+    }
 
     #[test]
     fn bin_name_is_ctx() {

@@ -44,7 +44,7 @@ enum Commands {
     Doctor,
     /// Install hooks + MCP for a harness
     Setup {
-        /// claude | cursor | windsurf | vscode | all | wizard
+        /// claude | cursor | windsurf | vscode | continue | jetbrains | aider | copilot | codex | all | wizard
         target: String,
         /// Interactive (or defaulted) first-run wizard
         #[arg(long)]
@@ -174,6 +174,8 @@ enum VersionAction {
     Pin,
     /// Replace the running binary with a pinned copy
     Use { id: String },
+    /// Switch back to the previously running pinned copy
+    Rollback,
 }
 
 fn main() {
@@ -326,6 +328,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             VersionAction::List => snapshot::versions(),
             VersionAction::Pin => snapshot::pin(),
             VersionAction::Use { id } => snapshot::use_version(&id),
+            VersionAction::Rollback => snapshot::rollback(),
         },
     }
 }

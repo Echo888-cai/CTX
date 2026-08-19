@@ -17,6 +17,11 @@ pub fn init() -> anyhow::Result<()> {
     let claude = detect_claude();
     let cursor = detect_cursor();
     let windsurf = detect_windsurf();
+    let vscode = detect_vscode();
+    let cont = detect_continue();
+    let jetbrains = detect_jetbrains();
+    let aider = detect_aider();
+    let codex = detect_codex();
 
     println!("CTX  {}", paths.root().display());
     println!();
@@ -24,6 +29,11 @@ pub fn init() -> anyhow::Result<()> {
     println!("  {}  Claude Code", mark(claude));
     println!("  {}  Cursor", mark(cursor));
     println!("  {}  Windsurf", mark(windsurf));
+    println!("  {}  VS Code / Copilot", mark(vscode));
+    println!("  {}  Continue.dev", mark(cont));
+    println!("  {}  JetBrains", mark(jetbrains));
+    println!("  {}  Aider", mark(aider));
+    println!("  {}  Codex CLI", mark(codex));
     println!();
 
     if claude {
@@ -38,8 +48,29 @@ pub fn init() -> anyhow::Result<()> {
         setup_windsurf()?;
         println!("  ✓  Windsurf     mcp");
     }
-    if !claude && !cursor && !windsurf {
-        println!("  ·  none — later: ctx setup claude, cursor, windsurf, or vscode");
+    if vscode {
+        let _ = setup_vscode();
+        let _ = setup_copilot();
+        println!("  ✓  VS Code      mcp");
+    }
+    if cont {
+        setup_continue()?;
+        println!("  ✓  Continue     mcp");
+    }
+    if jetbrains {
+        setup_jetbrains()?;
+        println!("  ✓  JetBrains    mcp");
+    }
+    if aider {
+        setup_aider()?;
+        println!("  ✓  Aider        wrapper");
+    }
+    if codex {
+        setup_codex()?;
+        println!("  ✓  Codex        mcp");
+    }
+    if !claude && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
+        println!("  ·  none — later: ctx setup claude, cursor, windsurf, vscode, continue, jetbrains, aider, or codex");
     }
 
     let _ = crate::snapshot::pin();
@@ -72,18 +103,47 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
             println!("VS Code MCP installed. Reload the window to pick up ctx.");
             Ok(())
         }
+        "continue" => {
+            setup_continue()?;
+            println!("Continue.dev MCP installed. Reload Continue to pick up ctx.");
+            Ok(())
+        }
+        "jetbrains" | "idea" | "goland" | "pycharm" => {
+            setup_jetbrains()?;
+            println!("JetBrains MCP installed. Restart the IDE AI chat.");
+            Ok(())
+        }
+        "aider" => {
+            setup_aider()?;
+            Ok(())
+        }
+        "codex" => {
+            setup_codex()?;
+            println!("Codex CLI MCP installed. Restart Codex.");
+            Ok(())
+        }
+        "copilot" => {
+            setup_copilot()?;
+            println!("GitHub Copilot MCP installed (VS Code user mcp.json).");
+            Ok(())
+        }
         "all" => {
             setup_claude()?;
             setup_cursor()?;
             setup_windsurf()?;
             let _ = setup_vscode();
-            println!("Claude Code + Cursor + Windsurf + VS Code installed. ctx doctor to verify.");
+            let _ = setup_continue();
+            let _ = setup_jetbrains();
+            let _ = setup_aider();
+            let _ = setup_codex();
+            let _ = setup_copilot();
+            println!("Harness adapters installed. ctx doctor to verify.");
             Ok(())
         }
         "wizard" => wizard(),
         other => {
             anyhow::bail!(
-                "unknown target {other:?} (use claude, cursor, windsurf, vscode, all, or wizard)"
+                "unknown target {other:?} (use claude, cursor, windsurf, vscode, continue, jetbrains, aider, copilot, codex, all, or wizard)"
             )
         }
     }
@@ -101,10 +161,20 @@ pub fn wizard() -> anyhow::Result<()> {
     let claude = detect_claude();
     let cursor = detect_cursor();
     let windsurf = detect_windsurf();
+    let vscode = detect_vscode();
+    let cont = detect_continue();
+    let jetbrains = detect_jetbrains();
+    let aider = detect_aider();
+    let codex = detect_codex();
     println!("[1/5] Detected");
     println!("  {}  Claude Code", mark(claude));
     println!("  {}  Cursor", mark(cursor));
     println!("  {}  Windsurf", mark(windsurf));
+    println!("  {}  VS Code / Copilot", mark(vscode));
+    println!("  {}  Continue.dev", mark(cont));
+    println!("  {}  JetBrains", mark(jetbrains));
+    println!("  {}  Aider", mark(aider));
+    println!("  {}  Codex CLI", mark(codex));
 
     let interactive = io::stdin().is_terminal();
     let strategy = if interactive {
@@ -163,7 +233,28 @@ pub fn wizard() -> anyhow::Result<()> {
         setup_windsurf()?;
         println!("  ✓  Windsurf");
     }
-    if !claude && !cursor && !windsurf {
+    if vscode {
+        let _ = setup_vscode();
+        let _ = setup_copilot();
+        println!("  ✓  VS Code");
+    }
+    if cont {
+        let _ = setup_continue();
+        println!("  ✓  Continue");
+    }
+    if jetbrains {
+        let _ = setup_jetbrains();
+        println!("  ✓  JetBrains");
+    }
+    if aider {
+        let _ = setup_aider();
+        println!("  ✓  Aider");
+    }
+    if codex {
+        let _ = setup_codex();
+        println!("  ✓  Codex");
+    }
+    if !claude && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
         println!("  ·  none — later: ctx setup all");
     }
 
@@ -204,6 +295,59 @@ fn detect_windsurf() -> bool {
         || dirs::home_dir()
             .map(|h| h.join(".codeium").join("windsurf").exists())
             .unwrap_or(false)
+}
+
+fn detect_vscode() -> bool {
+    dirs::home_dir()
+        .map(|h| {
+            h.join("Library")
+                .join("Application Support")
+                .join("Code")
+                .is_dir()
+                || h.join(".config").join("Code").is_dir()
+                || h.join("AppData").join("Roaming").join("Code").is_dir()
+        })
+        .unwrap_or(false)
+}
+
+fn detect_continue() -> bool {
+    dirs::home_dir()
+        .map(|h| h.join(".continue").is_dir())
+        .unwrap_or(false)
+}
+
+fn detect_jetbrains() -> bool {
+    dirs::home_dir()
+        .map(|h| {
+            h.join("Library")
+                .join("Application Support")
+                .join("JetBrains")
+                .is_dir()
+                || h.join(".config").join("JetBrains").is_dir()
+                || h.join(".local").join("share").join("JetBrains").is_dir()
+                || h.join("AppData").join("Roaming").join("JetBrains").is_dir()
+        })
+        .unwrap_or(false)
+}
+
+fn detect_aider() -> bool {
+    which("aider")
+}
+
+fn detect_codex() -> bool {
+    dirs::home_dir()
+        .map(|h| h.join(".codex").is_dir())
+        .unwrap_or(false)
+        || which("codex")
+}
+
+fn which(name: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|dir| {
+        let unix = dir.join(name).is_file();
+        let win = dir.join(format!("{name}.exe")).is_file();
+        unix || win
+    })
 }
 
 fn ctx_bin() -> String {
@@ -324,6 +468,138 @@ fn setup_windsurf() -> anyhow::Result<()> {
     write_json_atomic(&mcp_path, &mcp)?;
     println!("Installed Windsurf MCP → {}", mcp_path.display());
     Ok(())
+}
+
+fn continue_yaml(bin: &str) -> String {
+    format!("name: ctx\ncommand: {bin}\nargs:\n  - mcp\n")
+}
+
+fn setup_continue() -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let dir = home.join(".continue").join("mcpServers");
+    fs::create_dir_all(&dir).ok();
+    let path = dir.join("ctx.yaml");
+    fs::write(&path, continue_yaml(&ctx_bin()))?;
+    println!("Installed Continue MCP → {}", path.display());
+    Ok(())
+}
+
+fn setup_jetbrains() -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let candidates = [
+        home.join("Library")
+            .join("Application Support")
+            .join("JetBrains")
+            .join("mcp.json"),
+        home.join(".config").join("JetBrains").join("mcp.json"),
+        home.join("AppData")
+            .join("Roaming")
+            .join("JetBrains")
+            .join("mcp.json"),
+    ];
+    let mut path = candidates
+        .iter()
+        .find(|p| p.parent().map(|d| d.exists()).unwrap_or(false))
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone());
+    if Path::new(".idea").is_dir() {
+        path = PathBuf::from(".idea").join("mcp.json");
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    write_mcp_servers(&path)?;
+    println!("Installed JetBrains MCP → {}", path.display());
+    Ok(())
+}
+
+fn setup_aider() -> anyhow::Result<()> {
+    let paths = CtxPaths::default_home()?;
+    let dir = paths.root().join("bin");
+    fs::create_dir_all(&dir)?;
+    let wrap = dir.join(if cfg!(windows) {
+        "aider-ctx.cmd"
+    } else {
+        "aider-ctx"
+    });
+    let bin = ctx_bin();
+    let body = if cfg!(windows) {
+        format!("@echo off\r\n\"{bin}\" exec -- aider %*\r\n")
+    } else {
+        format!("#!/usr/bin/env bash\nexec {bin} exec -- aider \"$@\"\n")
+    };
+    fs::write(&wrap, body)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&wrap)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&wrap, perms)?;
+    }
+    println!("Aider wrapper → {}", wrap.display());
+    println!("Use it instead of aider so long command dumps stay in the CTX store.");
+    Ok(())
+}
+
+fn setup_codex() -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let dir = home.join(".codex");
+    fs::create_dir_all(&dir).ok();
+    let path = dir.join("config.toml");
+    let mut text = fs::read_to_string(&path).unwrap_or_default();
+    if text.contains("[mcp_servers.ctx]") {
+        println!("Codex already has ctx MCP → {}", path.display());
+        return Ok(());
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    let bin = ctx_bin().replace('\\', "\\\\").replace('"', "\\\"");
+    text.push_str(&format!(
+        "\n[mcp_servers.ctx]\ncommand = \"{bin}\"\nargs = [\"mcp\"]\n"
+    ));
+    fs::write(&path, text)?;
+    println!("Installed Codex MCP → {}", path.display());
+    Ok(())
+}
+
+fn setup_copilot() -> anyhow::Result<()> {
+    setup_vscode()?;
+    let ws = PathBuf::from(".vscode").join("mcp.json");
+    if Path::new(".vscode").is_dir() || Path::new(".git").is_dir() {
+        if let Some(parent) = ws.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        write_vscode_mcp(&ws)?;
+        println!("Installed Copilot workspace MCP → {}", ws.display());
+    }
+    Ok(())
+}
+
+fn write_mcp_servers(path: &Path) -> anyhow::Result<()> {
+    let mut root = read_json_object(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+    let obj = root.as_object_mut().unwrap();
+    merge_mcp(obj, &ctx_bin())?;
+    write_json_atomic(path, &root)
+}
+
+fn write_vscode_mcp(path: &Path) -> anyhow::Result<()> {
+    let mut root = read_json_object(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+    let obj = root.as_object_mut().unwrap();
+    let servers = obj.entry("servers").or_insert_with(|| json!({}));
+    if let Some(map) = servers.as_object_mut() {
+        map.insert(
+            "ctx".into(),
+            json!({"type": "stdio", "command": ctx_bin(), "args": ["mcp"]}),
+        );
+    }
+    write_json_atomic(path, &root)
 }
 
 pub fn read_json_object(path: &Path) -> anyhow::Result<Value> {
@@ -493,6 +769,13 @@ mod tests {
         assert_eq!(pre.len(), 1, "{pre:?}");
         assert!(hooks["hooks"]["beforeSubmitPrompt"].as_array().is_some());
         assert!(is_ctx_hook_command(pre[0]["command"].as_str().unwrap()));
+    }
+
+    #[test]
+    fn continue_yaml_lists_mcp_stdio() {
+        let y = continue_yaml("/opt/ctx");
+        assert!(y.contains("command: /opt/ctx"), "{y}");
+        assert!(y.contains("- mcp"), "{y}");
     }
 
     #[test]

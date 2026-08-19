@@ -8,6 +8,11 @@ pub enum Harness {
     ClaudeCode,
     Cursor,
     Windsurf,
+    Continue,
+    JetBrains,
+    Aider,
+    Codex,
+    Copilot,
     #[serde(other)]
     Unknown,
 }
@@ -18,6 +23,11 @@ impl Harness {
             Self::ClaudeCode => "claude-code",
             Self::Cursor => "cursor",
             Self::Windsurf => "windsurf",
+            Self::Continue => "continue",
+            Self::JetBrains => "jetbrains",
+            Self::Aider => "aider",
+            Self::Codex => "codex",
+            Self::Copilot => "copilot",
             Self::Unknown => "unknown",
         }
     }
@@ -27,6 +37,11 @@ impl Harness {
             "claude" | "claude-code" | "ClaudeCode" => Self::ClaudeCode,
             "cursor" | "Cursor" => Self::Cursor,
             "windsurf" | "Windsurf" | "codeium" => Self::Windsurf,
+            "continue" | "Continue" => Self::Continue,
+            "jetbrains" | "JetBrains" | "idea" | "goland" | "pycharm" => Self::JetBrains,
+            "aider" | "Aider" => Self::Aider,
+            "codex" | "openai-codex" | "Codex" => Self::Codex,
+            "copilot" | "github-copilot" | "Copilot" => Self::Copilot,
             _ => Self::Unknown,
         }
     }
@@ -48,6 +63,11 @@ mod tests {
         assert_eq!(Harness::parse("windsurf"), Harness::Windsurf);
         assert_eq!(Harness::parse("codeium"), Harness::Windsurf);
         assert_eq!(Harness::parse("claude-code"), Harness::ClaudeCode);
+        assert_eq!(Harness::parse("continue"), Harness::Continue);
+        assert_eq!(Harness::parse("jetbrains"), Harness::JetBrains);
+        assert_eq!(Harness::parse("aider"), Harness::Aider);
+        assert_eq!(Harness::parse("codex"), Harness::Codex);
+        assert_eq!(Harness::parse("copilot"), Harness::Copilot);
         assert_eq!(Harness::parse("nope"), Harness::Unknown);
         assert_eq!(Harness::Windsurf.as_str(), "windsurf");
     }

@@ -214,8 +214,10 @@ fn post_tool_use(
     }
 
     let stdout = match harness {
-        Harness::ClaudeCode => claude_updated_output(tool_name, value, &result.delivered),
-        Harness::Cursor | Harness::Windsurf => {
+        Harness::ClaudeCode | Harness::Unknown => {
+            claude_updated_output(tool_name, value, &result.delivered)
+        }
+        _ => {
             if ToolKind::from_tool_name(tool_name) == ToolKind::Mcp
                 || tool_name.to_ascii_lowercase().starts_with("mcp")
             {
@@ -226,7 +228,6 @@ fn post_tool_use(
                 String::new()
             }
         }
-        Harness::Unknown => claude_updated_output(tool_name, value, &result.delivered),
     };
     Ok(HookResponse {
         stdout,

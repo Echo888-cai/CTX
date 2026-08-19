@@ -1,0 +1,3 @@
+[mcp_servers.ctx]
+command = "ctx"
+args = ["mcp"]

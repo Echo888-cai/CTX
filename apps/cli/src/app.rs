@@ -294,6 +294,11 @@ fn setup_target(target: &str) -> Value {
         "cursor" => setup::setup("cursor"),
         "windsurf" => setup::setup("windsurf"),
         "vscode" | "code" => setup::setup("vscode"),
+        "continue" => setup::setup("continue"),
+        "jetbrains" | "idea" => setup::setup("jetbrains"),
+        "aider" => setup::setup("aider"),
+        "codex" => setup::setup("codex"),
+        "copilot" => setup::setup("copilot"),
         _ => setup::init(),
     };
     match result {
