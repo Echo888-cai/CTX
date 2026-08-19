@@ -53,6 +53,58 @@ resolve_src() {
 }
 
 main() {
+
+try_prebuilt() {
+  local os arch target url tmp
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$os-$arch" in
+    Darwin-arm64) target="aarch64-apple-darwin" ;;
+    Darwin-x86_64) target="x86_64-apple-darwin" ;;
+    Linux-x86_64) target="x86_64-unknown-linux-gnu" ;;
+    Linux-aarch64) target="aarch64-unknown-linux-gnu" ;;
+    *) return 1 ;;
+  esac
+  command -v curl >/dev/null 2>&1 || return 1
+  url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
+  tmp="$(mktemp -d)"
+  if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
+    tar -C "$tmp" -xzf "$tmp/ctx.tar.gz"
+    mkdir -p "$HOME/.cargo/bin"
+    if [ -f "$tmp/ctx-${target}" ]; then
+      install -m 755 "$tmp/ctx-${target}" "$HOME/.cargo/bin/ctx"
+    elif [ -f "$tmp/ctx" ]; then
+      install -m 755 "$tmp/ctx" "$HOME/.cargo/bin/ctx"
+    else
+      rm -rf "$tmp"
+      return 1
+    fi
+    rm -rf "$tmp"
+    say "installed prebuilt ctx ($target)"
+    return 0
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
+  if try_prebuilt; then
+    ensure_path_hint
+    say "creating ~/.ctx and wiring Claude / Cursor"
+    ctx init
+    cat <<'EOF'
+
+CTX is on this machine.
+
+  ctx app              open today's avoided-token dashboard
+  ctx app --install-service   start it at login (macOS / Linux)
+  ctx status           same numbers in the terminal
+  ctx doctor           wiring check
+
+The big number is tokens that never entered the model.
+Raw context stayed on disk. Nothing was summarized away.
+EOF
+    return
+  fi
   ensure_rust
   ensure_path_hint
   resolve_src

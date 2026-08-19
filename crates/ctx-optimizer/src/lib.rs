@@ -8,6 +8,7 @@ mod ansi;
 mod budget;
 mod compact;
 mod cow;
+mod diff;
 mod duplicate;
 mod file_read;
 mod frames;
@@ -22,12 +23,16 @@ mod shell;
 mod symbols;
 mod tokens;
 
-pub use budget::{cap as token_budget, lock_fill};
+pub use budget::{
+    cap as token_budget, cap_for, cap_hint, from_parts as budget_from_parts, lock_fill, BudgetHint,
+    BudgetStrategy,
+};
 pub use compact::{
     compact_block, diagnostic_preview, diagnostic_ranked, is_diagnostic_line, map_path_token,
     strip_backtraces,
 };
 pub use cow::cow_working_set;
+pub use diff::diff_working_set;
 pub use duplicate::DuplicateGuard;
 pub use file_read::{extract_regions, outline_source, outline_working_set, ReadGuard};
 pub use frames::{extract_frames, extract_map_hits, extract_maps, MapHit};

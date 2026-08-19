@@ -95,6 +95,10 @@ fn detect_harness() -> Harness {
         Harness::Cursor
     } else if std::env::var("CLAUDE_SESSION_ID").is_ok() || std::env::var("CLAUDECODE").is_ok() {
         Harness::ClaudeCode
+    } else if std::env::var("WINDSURF_SESSION_ID").is_ok()
+        || std::env::var("CODEIUM_SESSION").is_ok()
+    {
+        Harness::Windsurf
     } else {
         Harness::Unknown
     }

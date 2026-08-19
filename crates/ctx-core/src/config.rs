@@ -10,6 +10,16 @@ pub struct Config {
     /// Cursor/Claude file reads above this are routed to ctx_read / outlined.
     #[serde(default = "default_large_file")]
     pub large_file_tokens: u32,
+    /// extreme | balanced | conservative
+    #[serde(default = "default_strategy")]
+    pub budget_strategy: String,
+    /// Reserved: local embeddings. TF-IDF ranking is always on.
+    #[serde(default)]
+    pub enable_semantic: bool,
+    /// Built-in optimizer names, in order. Empty = default pipeline.
+    /// Entries ending in `.wasm` are reserved and skipped.
+    #[serde(default)]
+    pub optimizers: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -21,6 +31,9 @@ fn default_threshold() -> u32 {
 fn default_large_file() -> u32 {
     400
 }
+fn default_strategy() -> String {
+    "balanced".into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -28,6 +41,9 @@ impl Default for Config {
             enabled: true,
             virtualize_threshold_tokens: default_threshold(),
             large_file_tokens: default_large_file(),
+            budget_strategy: default_strategy(),
+            enable_semantic: false,
+            optimizers: Vec::new(),
         }
     }
 }

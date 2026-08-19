@@ -4,16 +4,22 @@
 //! Principle 2: every virtualized payload has a `ctx://` URI that can restore the original.
 
 mod blob;
+mod bloom;
+mod cache;
+mod compress;
 mod db;
 mod error;
 mod metrics;
+mod observe;
 mod paths;
 
 pub use blob::{blake3_hex, normalize_hash};
+pub use cache::{decode_blob_file, prefetch_blobs, stats as cache_stats};
 pub use error::StoreError;
+pub use observe::{record_hook, record_page_fault};
 pub use paths::{CtxPaths, DEFAULT_HOME_ENV};
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::{params, Connection};
@@ -25,7 +31,15 @@ use crate::db::migrate;
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+pub struct DbSnapshot {
+    pub id: String,
+    pub created_at: i64,
+    pub note: String,
+    #[serde(skip)]
+    pub path: std::path::PathBuf,
+}
+
 pub struct PutBlob {
     pub hash: String,
     pub bytes: usize,
@@ -137,7 +151,10 @@ pub struct FrameHit {
 
 pub struct Store {
     paths: CtxPaths,
-    conn: Mutex<Connection>,
+    /// ingest / mutations
+    write: Mutex<Connection>,
+    /// dashboard + search (WAL snapshot; query_only)
+    read: Mutex<Connection>,
 }
 
 impl Store {
@@ -149,9 +166,13 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(Duration::from_millis(5_000))?;
         migrate(&conn)?;
+        let read = Connection::open(paths.db_path())?;
+        read.busy_timeout(Duration::from_millis(5_000))?;
+        let _ = read.pragma_update(None, "query_only", 1);
         Ok(Self {
             paths,
-            conn: Mutex::new(conn),
+            write: Mutex::new(conn),
+            read: Mutex::new(read),
         })
     }
 
@@ -164,10 +185,18 @@ impl Store {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+        self.write.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn reader(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.read.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn put_bytes(&self, bytes: &[u8]) -> Result<PutBlob> {
+        self.put_bytes_kind(bytes, None)
+    }
+
+    pub fn put_bytes_kind(&self, bytes: &[u8], kind: Option<&str>) -> Result<PutBlob> {
         let hash = blake3_hex(bytes);
         let rel = blob::blob_relpath(&hash);
         let dest = self.paths.store_dir().join(rel);
@@ -175,10 +204,11 @@ impl Store {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let compressed = zstd::encode_all(bytes, 3)?;
+            let compressed = compress::encode(bytes, kind)?;
             let tmp = dest.with_extension("zst.tmp");
             std::fs::write(&tmp, &compressed)?;
             std::fs::rename(&tmp, &dest)?;
+            cache::insert(hash.clone(), Arc::new(bytes.to_vec()));
             let now = now_secs();
             let conn = self.lock();
             conn.execute(
@@ -200,9 +230,41 @@ impl Store {
     }
 
     pub fn get_bytes(&self, hash: &str) -> Result<Vec<u8>> {
+        if let Some(hit) = cache::get(hash) {
+            return Ok((*hit).clone());
+        }
         let dest = self.paths.store_dir().join(blob::blob_relpath(hash));
-        let compressed = std::fs::read(&dest).map_err(|_| StoreError::NotFound(hash.into()))?;
-        Ok(zstd::decode_all(compressed.as_slice())?)
+        let raw = cache::decode_blob_file(&dest).map_err(|_| StoreError::NotFound(hash.into()))?;
+        cache::insert(hash.to_string(), Arc::new(raw.clone()));
+        Ok(raw)
+    }
+
+    /// True when this URI was previously page-faulted (`ctx_fetch`).
+    pub fn uri_was_fetched(&self, uri: &str) -> Result<bool> {
+        let conn = self.reader();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM observations WHERE uri = ?1 AND accessed_at > 0",
+            params![uri],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Speculative decompress into the process ARC cache. Fire-and-forget.
+    pub fn prefetch(&self, hashes: &[String]) {
+        let hashes: Vec<String> = hashes
+            .iter()
+            .filter(|h| !h.is_empty())
+            .take(4)
+            .cloned()
+            .collect();
+        if hashes.is_empty() {
+            return;
+        }
+        let paths = self.paths.clone();
+        let _ = std::thread::Builder::new()
+            .name("ctx-prefetch".into())
+            .spawn(move || cache::prefetch_blobs(&paths, &hashes));
     }
 
     pub fn get_bytes_by_uri(&self, uri: &CtxUri) -> Result<Vec<u8>> {
@@ -235,53 +297,67 @@ impl Store {
 
     /// Page row + FTS + frame table in one transaction.
     pub fn record_page(&self, page: RecordPage<'_>) -> Result<()> {
-        let key = page.uri.page_key();
-        let clipped = clip_fts(page.body);
-        let summary = first_signal_frame(page.frames);
         let conn = self.lock();
         let tx = conn.unchecked_transaction()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO pages (uri, hash, kind, summary, raw_tokens, created_at, task, harness)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                &key,
-                page.hash,
-                &page.uri.kind,
-                summary,
-                page.raw_tokens,
-                now_secs(),
-                page.task,
-                page.harness
-            ],
-        )?;
-        if !page.body.is_empty() {
-            tx.execute("DELETE FROM pages_fts WHERE uri = ?1", params![&key])?;
-            tx.execute(
-                "INSERT INTO pages_fts (uri, kind, body) VALUES (?1, ?2, ?3)",
-                params![&key, &page.uri.kind, clipped],
-            )?;
-        }
-        tx.execute("DELETE FROM frames WHERE uri = ?1", params![&key])?;
-        for f in page.frames.iter().take(48) {
-            tx.execute(
-                "INSERT OR REPLACE INTO frames (uri, name, kind, start_line, end_line, hint)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    &key,
-                    &f.name,
-                    &f.kind,
-                    f.start_line as i64,
-                    f.end_line as i64,
-                    &f.hint
-                ],
-            )?;
-        }
+        write_page(&tx, page)?;
         tx.commit()?;
         Ok(())
     }
 
-    pub fn hash_for_uri(&self, uri: &CtxUri) -> Result<String> {
+    /// Blob index + page + observation in one WAL transaction.
+    pub fn commit_ingest(
+        &self,
+        blob: Option<&PutBlob>,
+        page: Option<RecordPage<'_>>,
+        obs: NewObservation,
+    ) -> Result<i64> {
         let conn = self.lock();
+        let tx = conn.unchecked_transaction()?;
+        if let Some(b) = blob {
+            tx.execute(
+                "INSERT OR IGNORE INTO blobs (hash, bytes, compressed_bytes, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    b.hash,
+                    b.bytes as i64,
+                    b.compressed_bytes as i64,
+                    now_secs()
+                ],
+            )?;
+        }
+        if let Some(page) = page {
+            write_page(&tx, page)?;
+        }
+        tx.execute(
+            "INSERT INTO observations (
+                session_id, event_type, tool_type, tool_name, uri, content_hash,
+                raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
+                referenced, source_path
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                obs.session_id,
+                obs.event_type,
+                obs.tool_type,
+                obs.tool_name,
+                obs.uri,
+                obs.content_hash,
+                obs.raw_tokens,
+                obs.delivered_tokens,
+                obs.avoided_tokens,
+                obs.optimizer,
+                obs.reasons.to_string(),
+                now_secs(),
+                if obs.referenced { 1i64 } else { 0i64 },
+                obs.source_path
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
+    }
+
+    pub fn hash_for_uri(&self, uri: &CtxUri) -> Result<String> {
+        let conn = self.reader();
         let exact: rusqlite::Result<String> = conn.query_row(
             "SELECT hash FROM pages WHERE uri = ?1",
             params![uri.page_key()],
@@ -328,7 +404,7 @@ impl Store {
     }
 
     pub fn session_task(&self, id: &str) -> Result<String> {
-        let conn = self.lock();
+        let conn = self.reader();
         let row = conn.query_row(
             "SELECT COALESCE(task, '') FROM sessions WHERE id = ?1",
             params![id],
@@ -382,31 +458,7 @@ impl Store {
     }
 
     pub fn insert_observation(&self, obs: NewObservation) -> Result<i64> {
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO observations (
-                session_id, event_type, tool_type, tool_name, uri, content_hash,
-                raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
-                referenced, source_path
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![
-                obs.session_id,
-                obs.event_type,
-                obs.tool_type,
-                obs.tool_name,
-                obs.uri,
-                obs.content_hash,
-                obs.raw_tokens,
-                obs.delivered_tokens,
-                obs.avoided_tokens,
-                obs.optimizer,
-                obs.reasons.to_string(),
-                now_secs(),
-                if obs.referenced { 1i64 } else { 0i64 },
-                obs.source_path
-            ],
-        )?;
-        Ok(conn.last_insert_rowid())
+        self.commit_ingest(None, None, obs)
     }
 
     pub fn remember_fingerprint(
@@ -462,7 +514,7 @@ impl Store {
     }
 
     pub fn lookup_fingerprint(&self, hash: &str) -> Result<Option<FingerprintHit>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let hit = conn.query_row(
             "SELECT hash, uri, count, first_seen_at FROM fingerprints WHERE hash = ?1",
             params![hash],
@@ -476,7 +528,7 @@ impl Store {
     }
 
     pub fn lookup_normalized(&self, normalized_hash: &str) -> Result<Option<FingerprintHit>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let hit = conn.query_row(
             "SELECT hash, uri, count, first_seen_at FROM fingerprints WHERE normalized_hash = ?1",
             params![normalized_hash],
@@ -490,7 +542,7 @@ impl Store {
     }
 
     pub fn get_file_read(&self, path: &str) -> Result<Option<FileReadRecord>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let row = conn.query_row(
             "SELECT path, content_hash, last_uri, last_tokens, regions FROM file_reads WHERE path = ?1",
             params![path],
@@ -536,7 +588,7 @@ impl Store {
     }
 
     pub fn observations_since(&self, since_unix: i64) -> Result<Vec<Observation>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, event_type, tool_type, tool_name, uri, content_hash,
                     raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
@@ -549,7 +601,7 @@ impl Store {
     }
 
     pub fn observations_for_session(&self, session_id: &str) -> Result<Vec<Observation>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, event_type, tool_type, tool_name, uri, content_hash,
                     raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
@@ -562,14 +614,14 @@ impl Store {
     }
 
     pub fn page_count(&self) -> Result<u64> {
-        let conn = self.lock();
+        let conn = self.reader();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM pages", [], |r| r.get(0))?;
         Ok(n as u64)
     }
 
     /// Newest pages first. Used by page-fault search.
     pub fn recent_pages(&self, limit: usize) -> Result<Vec<PageMeta>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT uri, hash, kind, summary, raw_tokens, created_at,
                     COALESCE(task, ''), COALESCE(harness, '')
@@ -603,13 +655,40 @@ impl Store {
     }
 
     pub fn compressed_bytes(&self) -> Result<u64> {
-        let conn = self.lock();
+        let conn = self.reader();
         let n: i64 = conn.query_row(
             "SELECT COALESCE(SUM(compressed_bytes), 0) FROM blobs",
             [],
             |r| r.get(0),
         )?;
         Ok(n as u64)
+    }
+
+    pub fn blob_count(&self) -> Result<u64> {
+        let conn = self.reader();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
+    pub fn observation_count(&self) -> Result<u64> {
+        let conn = self.reader();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM observations", [], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
+    pub fn avoided_by_optimizer(&self) -> Result<Vec<(String, u64)>> {
+        let conn = self.reader();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(optimizer, 'none'), COALESCE(SUM(avoided_tokens), 0)
+             FROM observations
+             GROUP BY optimizer
+             ORDER BY SUM(avoided_tokens) DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// Index a page body for FTS page-fault search.
@@ -629,7 +708,7 @@ impl Store {
             return Ok(Vec::new());
         };
         let cap = limit.clamp(1, 16) as i64;
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT f.uri, f.kind, snippet(pages_fts, 2, '', '', '…', 16),
                     COALESCE(p.raw_tokens, 0)
@@ -668,13 +747,14 @@ impl Store {
                     f.hint
                 ],
             )?;
+            bloom::insert_frame(&f.name, &f.hint);
         }
         tx.commit()?;
         Ok(())
     }
 
     pub fn frames_for(&self, uri: &str) -> Result<Vec<Frame>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT name, kind, start_line, end_line, hint FROM frames
              WHERE uri = ?1 ORDER BY start_line ASC",
@@ -708,13 +788,16 @@ impl Store {
         if q.len() < 2 {
             return Ok(Vec::new());
         }
+        if !bloom::query_might_match(q) {
+            return Ok(Vec::new());
+        }
         let escaped = q
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
         let pat = format!("%{}%", escaped.to_ascii_lowercase());
         let cap = limit.clamp(1, 16) as i64;
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT uri, name, kind, hint FROM frames
              WHERE lower(name) LIKE ?1 ESCAPE '\\'
@@ -745,7 +828,7 @@ impl Store {
         kind: &str,
         except_uri: &str,
     ) -> Result<Option<(String, String)>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let row = conn.query_row(
             "SELECT uri, content_hash FROM observations
              WHERE session_id = ?1 AND tool_type = ?2 AND uri IS NOT NULL AND uri != ?3
@@ -760,8 +843,92 @@ impl Store {
         }
     }
 
+    pub fn create_snapshot(&self, note: Option<&str>) -> Result<DbSnapshot> {
+        {
+            let conn = self.lock();
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+        }
+        let created_at = now_secs();
+        let id = created_at.to_string();
+        let dir = self.paths.snapshots_dir().join(&id);
+        std::fs::create_dir_all(&dir)?;
+        let db = self.paths.db_path();
+        if db.exists() {
+            std::fs::copy(&db, dir.join("ctx.db"))?;
+        }
+        let note = note.unwrap_or("").to_string();
+        let meta = serde_json::json!({
+            "id": id,
+            "created_at": created_at,
+            "note": note,
+        });
+        std::fs::write(
+            dir.join("meta.json"),
+            serde_json::to_vec_pretty(&meta).unwrap_or_else(|_| b"{}".to_vec()),
+        )?;
+        Ok(DbSnapshot {
+            id,
+            created_at,
+            note,
+            path: dir,
+        })
+    }
+
+    pub fn list_snapshots(&self) -> Result<Vec<DbSnapshot>> {
+        let root = self.paths.snapshots_dir();
+        let mut out = Vec::new();
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            return Ok(out);
+        };
+        for e in rd.flatten() {
+            let dir = e.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            if !dir.join("ctx.db").exists() {
+                continue;
+            }
+            let id = e.file_name().to_string_lossy().into_owned();
+            let (created_at, note) = match std::fs::read(dir.join("meta.json")) {
+                Ok(bytes) => {
+                    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                    (
+                        v.get("created_at").and_then(|x| x.as_i64()).unwrap_or(0),
+                        v.get("note")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    )
+                }
+                Err(_) => (0, String::new()),
+            };
+            out.push(DbSnapshot {
+                id,
+                created_at,
+                note,
+                path: dir,
+            });
+        }
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+        Ok(out)
+    }
+
+    pub fn restore_snapshot(&self, id: &str) -> Result<()> {
+        let dir = self.paths.snapshots_dir().join(id);
+        let src = dir.join("ctx.db");
+        if !src.exists() {
+            return Err(StoreError::NotFound(format!("snapshot {id}")));
+        }
+        {
+            let conn = self.lock();
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+        }
+        std::fs::copy(&src, self.paths.db_path())?;
+        Ok(())
+    }
+
     pub fn totals_since(&self, since_unix: i64) -> Result<TokenTotals> {
-        let conn = self.lock();
+        let conn = self.reader();
         conn.query_row(
             "SELECT
                 COALESCE(SUM(raw_tokens), 0),
@@ -781,7 +948,7 @@ impl Store {
     }
 
     pub fn totals_by_harness_since(&self, since_unix: i64) -> Result<Vec<(String, TokenTotals)>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT s.harness,
                     COALESCE(SUM(o.raw_tokens), 0),
@@ -807,7 +974,7 @@ impl Store {
     }
 
     pub fn reason_breakdown_since(&self, since_unix: i64) -> Result<Vec<(String, u64)>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn
             .prepare("SELECT reasons, avoided_tokens FROM observations WHERE created_at >= ?1")?;
         let mut acc: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
@@ -884,6 +1051,50 @@ fn map_fingerprint(r: &rusqlite::Row<'_>) -> rusqlite::Result<FingerprintHit> {
     })
 }
 
+fn write_page(tx: &rusqlite::Transaction<'_>, page: RecordPage<'_>) -> Result<()> {
+    let key = page.uri.page_key();
+    let clipped = clip_fts(page.body);
+    let summary = first_signal_frame(page.frames);
+    tx.execute(
+        "INSERT OR REPLACE INTO pages (uri, hash, kind, summary, raw_tokens, created_at, task, harness)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            &key,
+            page.hash,
+            &page.uri.kind,
+            summary,
+            page.raw_tokens,
+            now_secs(),
+            page.task,
+            page.harness
+        ],
+    )?;
+    if !page.body.is_empty() {
+        tx.execute("DELETE FROM pages_fts WHERE uri = ?1", params![&key])?;
+        tx.execute(
+            "INSERT INTO pages_fts (uri, kind, body) VALUES (?1, ?2, ?3)",
+            params![&key, &page.uri.kind, clipped],
+        )?;
+    }
+    tx.execute("DELETE FROM frames WHERE uri = ?1", params![&key])?;
+    for f in page.frames.iter().take(48) {
+        tx.execute(
+            "INSERT OR REPLACE INTO frames (uri, name, kind, start_line, end_line, hint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                &key,
+                &f.name,
+                &f.kind,
+                f.start_line as i64,
+                f.end_line as i64,
+                &f.hint
+            ],
+        )?;
+        bloom::insert_frame(&f.name, &f.hint);
+    }
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -950,6 +1161,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mmap_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(crate::CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let payload = b"mmap-blob-payload ".repeat(200);
+        let put = store.put_bytes(&payload).unwrap();
+        assert_eq!(store.get_bytes(&put.hash).unwrap(), payload);
+        assert_eq!(store.get_bytes(&put.hash).unwrap(), payload);
+    }
+
+    #[test]
+    fn commit_ingest_is_one_observation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(crate::CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let put = store.put_bytes(b"ingest-tx").unwrap();
+        let uri = ctx_protocol::CtxUri::new("shell", &put.hash);
+        let id = store
+            .commit_ingest(
+                Some(&put),
+                Some(RecordPage {
+                    uri: &uri,
+                    hash: &put.hash,
+                    body: "ingest-tx",
+                    frames: &[],
+                    raw_tokens: 4,
+                    harness: "test",
+                    task: "t",
+                }),
+                NewObservation {
+                    session_id: "s".into(),
+                    event_type: "tool_output".into(),
+                    tool_type: Some("shell".into()),
+                    tool_name: Some("Bash".into()),
+                    uri: Some(uri.page_key()),
+                    content_hash: put.hash.clone(),
+                    raw_tokens: 4,
+                    delivered_tokens: 2,
+                    avoided_tokens: 2,
+                    optimizer: Some("shell".into()),
+                    reasons: serde_json::json!([]),
+                    referenced: false,
+                    source_path: None,
+                },
+            )
+            .unwrap();
+        assert!(id > 0);
+        assert_eq!(store.observation_count().unwrap(), 1);
+        assert!(store
+            .prometheus_text()
+            .unwrap()
+            .contains("ctx_observations_total 1"));
+    }
+    #[test]
     fn put_get_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
@@ -959,6 +1222,27 @@ mod tests {
         assert_eq!(got, b"hello ctx");
         let again = store.put_bytes(b"hello ctx").unwrap();
         assert_eq!(again.hash, put.hash);
+        let _ = store.get_bytes(&put.hash).unwrap();
+        let (hits_before, _) = crate::cache_stats();
+        let _ = store.get_bytes(&put.hash).unwrap();
+        let (hits_after, _) = crate::cache_stats();
+        assert!(
+            hits_after > hits_before,
+            "hits {hits_before} -> {hits_after}"
+        );
+    }
+
+    #[test]
+    fn snapshot_roundtrip_keeps_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let put = store.put_bytes(b"snap-payload").unwrap();
+        let snap = store.create_snapshot(Some("test")).unwrap();
+        assert!(!snap.id.is_empty());
+        let listed = store.list_snapshots().unwrap();
+        assert_eq!(listed[0].id, snap.id);
+        store.restore_snapshot(&snap.id).unwrap();
+        assert_eq!(store.get_bytes(&put.hash).unwrap(), b"snap-payload");
     }
 
     #[test]

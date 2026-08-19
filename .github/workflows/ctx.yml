@@ -1,0 +1,16 @@
+name: ctx
+# Example CI job: install CTX and fail the build if hooks/store look broken.
+# Reuse from other repos with:
+#   - uses: Echo888-cai/CTX/.github/actions/setup-ctx@main
+on:
+  workflow_dispatch:
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-ctx
+        with:
+          init: "true"
+      - run: ctx doctor

@@ -21,7 +21,7 @@ pub struct ModelRow {
 
 impl Store {
     pub fn dashboard_totals(&self, since: i64, model: Option<&str>) -> Result<TokenTotals> {
-        let conn = self.lock();
+        let conn = self.reader();
         let row = if let Some(model) = model {
             conn.query_row(
                 "SELECT
@@ -53,7 +53,7 @@ impl Store {
     }
 
     pub fn dashboard_models(&self, since: i64) -> Result<Vec<ModelRow>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT CASE WHEN s.model = '' THEN '__unknown__' ELSE s.model END,
                     COUNT(DISTINCT o.session_id),
@@ -95,7 +95,7 @@ impl Store {
         tz: i64,
         model: Option<&str>,
     ) -> Result<Vec<SeriesPoint>> {
-        let conn = self.lock();
+        let conn = self.reader();
         let sql = if model.is_some() {
             "SELECT ((o.created_at + ?2) / ?3) * ?3 - ?2,
                     COALESCE(SUM(o.raw_tokens), 0),

@@ -5,7 +5,9 @@ mod exec;
 mod inspect;
 mod search;
 mod setup;
+mod snapshot;
 mod status;
+mod uninstall;
 mod why;
 
 use std::io::{Read, Write};
@@ -41,8 +43,11 @@ enum Commands {
     Doctor,
     /// Install hooks + MCP for a harness
     Setup {
-        /// claude | cursor | all
+        /// claude | cursor | windsurf | all | wizard
         target: String,
+        /// Interactive (or defaulted) first-run wizard
+        #[arg(long)]
+        wizard: bool,
     },
     /// Run a command, store raw output, print the working set
     Exec {
@@ -115,6 +120,50 @@ enum Commands {
     },
     /// Serve the CTX MCP (stdio)
     Mcp,
+    /// Create / list / restore store snapshots
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
+    /// Remove harness hooks (optionally archive the store)
+    Uninstall {
+        /// Rename ~/.ctx to ~/.ctx.backup.<timestamp>
+        #[arg(long)]
+        purge: bool,
+        /// Required with --purge
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Print the binary version and any local copies
+    Versions,
+    /// Pin or switch the installed binary
+    Version {
+        #[command(subcommand)]
+        action: VersionAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapshotAction {
+    /// Checkpoint the SQLite store
+    Create {
+        #[arg(long)]
+        note: Option<String>,
+    },
+    List,
+    Restore {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum VersionAction {
+    /// List the running version and pinned copies
+    List,
+    /// Copy this binary into ~/.ctx/versions/<version>/
+    Pin,
+    /// Replace the running binary with a pinned copy
+    Use { id: String },
 }
 
 fn main() {
@@ -142,7 +191,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Init) => setup::init(),
         Some(Commands::Status { json }) => status::run(json),
         Some(Commands::Doctor) => doctor::run(),
-        Some(Commands::Setup { target }) => setup::setup(&target),
+        Some(Commands::Setup { target, wizard }) => {
+            if wizard || target == "wizard" {
+                setup::wizard()
+            } else {
+                setup::setup(&target)
+            }
+        }
         Some(Commands::Exec {
             shell,
             cwd,
@@ -247,6 +302,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ctx_mcp::serve(rt)?;
             Ok(())
         }
+        Some(Commands::Snapshot { action }) => match action {
+            SnapshotAction::Create { note } => snapshot::create(note.as_deref()),
+            SnapshotAction::List => snapshot::list(),
+            SnapshotAction::Restore { id } => snapshot::restore(&id),
+        },
+        Some(Commands::Uninstall { purge, yes }) => uninstall::run(purge, yes),
+        Some(Commands::Versions) => snapshot::versions(),
+        Some(Commands::Version { action }) => match action {
+            VersionAction::List => snapshot::versions(),
+            VersionAction::Pin => snapshot::pin(),
+            VersionAction::Use { id } => snapshot::use_version(&id),
+        },
     }
 }
 

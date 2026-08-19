@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use crate::compact::compact_block;
+use crate::diff::diff_working_set;
 use crate::frames::extract_frames;
 use crate::symbols::{collect_symbol_spans, slice_span};
 use crate::tokens::estimate_tokens;
@@ -19,6 +20,9 @@ pub fn cow_working_set(previous: &str, prev_uri: &str, current: &str) -> Option<
     }
     if let Some(text) = cow_symbols(previous, prev_uri, current) {
         return Some(text);
+    }
+    if let Some(text) = diff_working_set(previous, current, 400) {
+        return Some(format!("CoW vs {prev_uri}\n{text}"));
     }
     cow_lines(previous, prev_uri, current)
 }
@@ -297,6 +301,26 @@ mod tests {
         let a = "alpha\n".repeat(50);
         let b = "beta\n".repeat(50);
         assert!(cow_working_set(&a, "ctx://shell/x", &b).is_none());
+    }
+
+    #[test]
+    fn line_diff_cow_keeps_changed_line() {
+        let mut prev = String::new();
+        let mut curr = String::new();
+        for i in 0..48 {
+            prev.push_str(&format!("shared line {i} xxxxxxxxx\n"));
+            if i == 24 {
+                curr.push_str("shared line 24 CHANGED-TOKEN\n");
+            } else {
+                curr.push_str(&format!("shared line {i} xxxxxxxxx\n"));
+            }
+        }
+        let out = cow_working_set(&prev, "ctx://shell/prev", &curr).expect("cow");
+        assert!(out.contains("CoW vs"), "{out}");
+        assert!(out.contains("CHANGED-TOKEN"), "{out}");
+        assert!(out.contains("@@") || out.contains("+"), "{out}");
+        assert!(!out.contains("shared line 3 xxxxxxxxx"), "{out}");
+        assert!(estimate_tokens(&out) < estimate_tokens(&curr) / 2);
     }
 
     #[test]

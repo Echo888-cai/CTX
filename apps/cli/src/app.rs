@@ -106,10 +106,28 @@ fn dispatch(method: &str, path: &str, query: &str) -> (&'static str, &'static st
             };
             json_ok(dashboard_payload(range, model))
         }
-        ("POST", "/api/setup") => json_ok(setup_all()),
+        ("POST", "/api/setup") => json_ok(setup_target(query_param(query, "target"))),
         ("POST", "/api/pause") => json_ok(set_enabled(false)),
         ("POST", "/api/resume") => json_ok(set_enabled(true)),
+        ("POST", "/api/snapshot") => json_ok(snapshot_create()),
+        ("POST", "/api/snapshot/restore") => json_ok(snapshot_restore(query_param(query, "id"))),
+        ("GET", "/metrics") => (
+            "200 OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            prometheus_text(),
+        ),
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
+    }
+}
+
+fn prometheus_text() -> Vec<u8> {
+    match ctx_core::Runtime::open_default() {
+        Ok(rt) => rt
+            .store
+            .prometheus_text()
+            .unwrap_or_else(|err| format!("# error {err}\n"))
+            .into_bytes(),
+        Err(err) => format!("# ctx store unavailable: {err}\n").into_bytes(),
     }
 }
 
@@ -124,9 +142,38 @@ fn dashboard_payload(range: &str, model: &str) -> Value {
     }
 }
 
-fn setup_all() -> Value {
-    match setup::init() {
-        Ok(()) => json!({"ok": true, "message": "已安装 Claude / Cursor 钩子"}),
+fn setup_target(target: &str) -> Value {
+    let result = match target {
+        "claude" | "claude-code" => setup::setup("claude"),
+        "cursor" => setup::setup("cursor"),
+        "windsurf" => setup::setup("windsurf"),
+        _ => setup::init(),
+    };
+    match result {
+        Ok(()) => json!({"ok": true, "message": "已安装钩子"}),
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn snapshot_create() -> Value {
+    match ctx_core::Runtime::open_default() {
+        Ok(rt) => match rt.store.create_snapshot(Some("dashboard")) {
+            Ok(s) => json!({"ok": true, "id": s.id}),
+            Err(err) => json!({"ok": false, "error": err.to_string()}),
+        },
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn snapshot_restore(id: &str) -> Value {
+    if id.is_empty() {
+        return json!({"ok": false, "error": "missing snapshot id"});
+    }
+    match ctx_core::Runtime::open_default() {
+        Ok(rt) => match rt.store.restore_snapshot(id) {
+            Ok(()) => json!({"ok": true, "id": id}),
+            Err(err) => json!({"ok": false, "error": err.to_string()}),
+        },
         Err(err) => json!({"ok": false, "error": err.to_string()}),
     }
 }
@@ -301,6 +348,21 @@ mod tests {
         assert!(PAGE.contains("让上下文，精准抵达"));
         assert!(PAGE.contains("/api/status"));
         assert!(PAGE.contains("上下文趋势"));
+        assert!(PAGE.contains("优化器拆分"));
+        assert!(PAGE.contains("创建快照"));
+        assert!(PAGE.contains("实时日志"));
+    }
+
+    #[test]
+    fn metrics_endpoint_is_prometheus_text() {
+        let (status, content_type, body) = dispatch("GET", "/metrics", "");
+        assert_eq!(status, "200 OK");
+        assert!(content_type.contains("text/plain"));
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("ctx_store") || text.contains("# ctx store") || text.contains("# error"),
+            "{text}"
+        );
     }
 
     #[test]

@@ -14,13 +14,14 @@ pub struct HookResponse {
 
 /// Fail-open hook entry: never break the harness on CTX errors.
 pub fn handle_hook(runtime: &Runtime, stdin_json: &str) -> HookResponse {
+    let started = std::time::Instant::now();
     let Ok(value) = serde_json::from_str::<Value>(stdin_json) else {
         return HookResponse {
             stdout: String::new(),
             deny: false,
         };
     };
-    match handle_hook_inner(runtime, &value) {
+    let resp = match handle_hook_inner(runtime, &value) {
         Ok(resp) => resp,
         Err(err) => {
             tracing::warn!(error = %err, "ctx hook failed; passing through (fail-open)");
@@ -29,7 +30,9 @@ pub fn handle_hook(runtime: &Runtime, stdin_json: &str) -> HookResponse {
                 deny: false,
             }
         }
-    }
+    };
+    ctx_store::record_hook(started.elapsed());
+    resp
 }
 
 fn handle_hook_inner(runtime: &Runtime, value: &Value) -> anyhow::Result<HookResponse> {
@@ -212,7 +215,7 @@ fn post_tool_use(
 
     let stdout = match harness {
         Harness::ClaudeCode => claude_updated_output(tool_name, value, &result.delivered),
-        Harness::Cursor => {
+        Harness::Cursor | Harness::Windsurf => {
             if ToolKind::from_tool_name(tool_name) == ToolKind::Mcp
                 || tool_name.to_ascii_lowercase().starts_with("mcp")
             {

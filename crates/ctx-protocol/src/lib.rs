@@ -1,6 +1,6 @@
 //! Harness-agnostic CTX event protocol.
 //!
-//! Adapters convert Claude Code, Cursor, and future harnesses into [`CtxEvent`].
+//! Adapters convert Claude Code, Cursor, Windsurf, and future harnesses into [`CtxEvent`].
 //! Core never depends on harness-specific shapes.
 
 mod event;

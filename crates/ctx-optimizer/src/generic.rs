@@ -10,7 +10,9 @@ impl Optimizer for GenericGuard {
             return None;
         }
         let task = task_tokens(input.metadata);
-        let text = reduce_text_for(input.payload, &task, input.raw_tokens);
+        let cap = budget::cap_hint(input.kind, input.metadata, input.payload, input.raw_tokens);
+        let text =
+            crate::compact::diagnostic_ranked(&crate::ansi::strip_ansi(input.payload), &task, cap);
         let out = OptimizeOutput::reduced("generic", text);
         if out.delivered_tokens + 120 >= input.raw_tokens {
             return None;

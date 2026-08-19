@@ -3,9 +3,11 @@
 //! Modest Working-Set Clock: referenced + recent → HOT; old unreferenced → COLD.
 //! Mapped pages: when a task is known, rank store-wide by token overlap, not recency.
 
+mod rank;
 mod task;
 
-pub use task::{extract_task, format_task, merge_tokens, overlap, parse_task};
+pub use rank::{tfidf_scores, SemanticRanker, TfIdfRanker};
+pub use task::{extract_task, format_task, merge_tokens, overlap, parse_task, token_matches};
 
 use ctx_store::{Observation, PageMeta, Store};
 
@@ -382,8 +384,9 @@ fn select_mapped(
     let git = git_paths_for(obs);
     let n_docs = pages.len().max(1) as u32;
     let df = query_df(pages, query);
+    let tfidf = crate::tfidf_scores(query, pages);
     let mut scored: Vec<(u32, i64, RecentPage)> = Vec::new();
-    for page in pages {
+    for (idx, page) in pages.iter().enumerate() {
         let (layer, tokens) = if let Some(o) = latest.get(&page.uri) {
             let age = now.saturating_sub(if o.accessed_at > 0 {
                 o.accessed_at
@@ -398,7 +401,8 @@ fn select_mapped(
         };
         let page_tokens = parse_task(&page.task);
         let ov = overlap(&page_tokens, query);
-        if ov == 0 && layer == ClockLayer::Cold {
+        let semantic = tfidf.get(idx).copied().unwrap_or(0.0);
+        if ov == 0 && semantic <= 0.0 && layer == ClockLayer::Cold {
             continue;
         }
         let mut score = ov * 12;
@@ -411,6 +415,7 @@ fn select_mapped(
             score += 6;
         }
         score += idf_points(&page_tokens, query, &df, n_docs);
+        score += (semantic * 18.0).round().max(0.0) as u32;
         if failish(page.summary.as_deref()) {
             score += 10;
         }

@@ -14,7 +14,12 @@ impl Optimizer for ShellGuard {
             return None;
         }
         let command = input.metadata.get("command").and_then(|v| v.as_str());
-        let text = with_exec_header(input, reduce_shell_with(input.payload, command));
+        let cap =
+            crate::budget::cap_hint(input.kind, input.metadata, input.payload, input.raw_tokens);
+        let text = with_exec_header(
+            input,
+            reduce_shell_budget(input.payload, command, Some(cap)),
+        );
         let out = OptimizeOutput::reduced_terminal("shell", text);
         if out.delivered_tokens + 40 >= input.raw_tokens {
             return None;
@@ -28,6 +33,10 @@ pub fn reduce_shell(payload: &str) -> String {
 }
 
 pub fn reduce_shell_with(payload: &str, command: Option<&str>) -> String {
+    reduce_shell_budget(payload, command, None)
+}
+
+fn reduce_shell_budget(payload: &str, command: Option<&str>, cap: Option<u32>) -> String {
     let stripped = strip_ansi(payload);
     let cleaned = collapse_noise(&stripped);
     let kind = detect_kind(&cleaned, command);
@@ -68,7 +77,7 @@ pub fn reduce_shell_with(payload: &str, command: Option<&str>) -> String {
         ShellKind::Listing => Reduced {
             body: crate::grep::reduce(&cleaned, crate::grep::SearchKind::Listing),
         },
-        ShellKind::Generic => reduce_generic(&cleaned),
+        ShellKind::Generic => reduce_generic(&cleaned, cap),
     }
     .body
 }
@@ -835,10 +844,11 @@ fn reduce_eslint(text: &str) -> Reduced {
     Reduced { body }
 }
 
-fn reduce_generic(text: &str) -> Reduced {
+fn reduce_generic(text: &str, cap: Option<u32>) -> Reduced {
     let raw = crate::tokens::estimate_tokens(text);
+    let max = cap.unwrap_or_else(|| crate::budget::cap(raw));
     Reduced {
-        body: crate::compact::diagnostic_ranked(text, &[], crate::budget::cap(raw)),
+        body: crate::compact::diagnostic_ranked(text, &[], max),
     }
 }
 

@@ -149,7 +149,66 @@ pub fn dashboard(range: &str, model: &str) -> anyhow::Result<Value> {
         "series": series,
         "models": models,
         "model_options": model_options,
+        "pages": rt.store.page_count().unwrap_or(0),
+        "store_bytes": rt.store.compressed_bytes().unwrap_or(0),
+        "reasons": optimizer_rows(&rt.store, since),
+        "recent": feed_rows(&rt.store),
+        "snapshots": snapshot_rows(&rt.store),
     }))
+}
+
+fn optimizer_rows(store: &Store, since: i64) -> Vec<Value> {
+    let rows = store.reason_breakdown_since(since).unwrap_or_default();
+    let total: u64 = rows.iter().map(|(_, n)| *n).sum::<u64>().max(1);
+    rows.into_iter()
+        .map(|(label, tokens)| {
+            json!({
+                "label": reason_short(&label),
+                "tokens": tokens,
+                "pct": (tokens * 100) / total,
+            })
+        })
+        .collect()
+}
+
+fn feed_rows(store: &Store) -> Vec<Value> {
+    let Ok(mut rows) = store.observations_since(now_unix().saturating_sub(7 * 86400)) else {
+        return vec![];
+    };
+    rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+    rows.truncate(12);
+    rows.into_iter()
+        .map(|o| {
+            let tool = o
+                .tool_name
+                .as_deref()
+                .or(o.tool_type.as_deref())
+                .unwrap_or(o.event_type.as_str());
+            json!({
+                "label": tool,
+                "opt": o.optimizer,
+                "uri": o.uri,
+                "raw": o.raw_tokens,
+                "delivered": o.delivered_tokens,
+            })
+        })
+        .collect()
+}
+
+fn snapshot_rows(store: &Store) -> Vec<Value> {
+    store
+        .list_snapshots()
+        .unwrap_or_default()
+        .into_iter()
+        .take(6)
+        .map(|s| {
+            json!({
+                "id": s.id,
+                "note": s.note,
+                "created_at": s.created_at,
+            })
+        })
+        .collect()
 }
 
 fn harness_label(id: &str) -> String {

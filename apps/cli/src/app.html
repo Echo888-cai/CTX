@@ -248,6 +248,56 @@
     .fresh { display: none; }
     .chart { height: 238px; }
   }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 28px; }
+  .stat {
+    padding: 16px 18px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--paper);
+  }
+  .stat b { display: block; font-size: 22px; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .work { display: grid; grid-template-columns: 1.15fr .85fr; gap: 18px; margin-top: 22px; }
+  .panel {
+    padding: 20px 22px 16px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--paper);
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 16px; font-weight: 620; }
+  .split .row {
+    display: grid;
+    grid-template-columns: 92px 1fr 64px;
+    gap: 10px;
+    align-items: center;
+    margin: 9px 0;
+    font-size: 13px;
+  }
+  .split .bar { height: 8px; background: var(--grid); border-radius: 99px; overflow: hidden; }
+  .split .bar i { display: block; height: 100%; background: var(--green); }
+  .split .tok { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .toolbar button {
+    min-height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--paper);
+    cursor: pointer;
+  }
+  .toolbar button.primary { background: var(--green); color: #fff; border-color: var(--green); }
+  .feed { max-height: 240px; overflow: auto; font-size: 13px; color: var(--muted); }
+  .feed div { padding: 7px 0; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  .feed b { color: var(--ink); font-weight: 600; }
+  .snaps { margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .snaps button { margin-left: 8px; }
+  @media (max-width: 900px) {
+    .stats, .work { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 620px) {
+    .stats, .work { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -315,6 +365,30 @@
       </div>
       <button class="more" type="button" id="more">查看详情</button>
     </section>
+
+    <div class="stats" aria-label="存储与页面">
+      <div class="stat"><b id="pages">—</b><span>页面数</span></div>
+      <div class="stat"><b id="store">—</b><span>存储压缩</span></div>
+      <div class="stat"><b id="today-avoided">—</b><span>区间避免 tokens</span></div>
+      <div class="stat"><b id="today-pct">—</b><span>区间节省率</span></div>
+    </div>
+    <div class="work">
+      <section class="panel split" aria-labelledby="opt-title">
+        <h2 id="opt-title">优化器拆分</h2>
+        <div id="split">这段时间还没有记录。</div>
+        <div class="toolbar">
+          <button class="primary" type="button" id="setup-claude">安装 Claude 钩子</button>
+          <button class="primary" type="button" id="setup-cursor">安装 Cursor 钩子</button>
+          <button type="button" id="pause">暂停</button>
+          <button type="button" id="snap">创建快照</button>
+        </div>
+        <div class="snaps" id="snaps"></div>
+      </section>
+      <section class="panel" aria-labelledby="feed-title">
+        <h2 id="feed-title">实时日志</h2>
+        <div class="feed" id="feed">等待事件…</div>
+      </section>
+    </div>
   </main>
 
 <script>
@@ -323,6 +397,10 @@ const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const DEMO = {
   ok: true, enabled: true, range: "7d", model: "all", date_label: "8月12日 — 8月18日",
   totals: { raw: 172200, delivered: 82800, avoided: 89400, reduction_pct: 52 },
+  pages: 1247, store_bytes: 2300000,
+  reasons: [{ label: "测试噪音", tokens: 304000, pct: 71 }, { label: "重复读文件", tokens: 77000, pct: 18 }],
+  recent: [{ label: "Bash · 测试噪音", raw: 18000, delivered: 412, opt: "shell" }],
+  snapshots: [],
   series: [
     ["8月12日", 15000, 4800, 8612], ["8月13日", 18000, 7200, 11427], ["8月14日", 25000, 9800, 15983],
     ["8月15日", 27000, 10400, 18276], ["8月16日", 20000, 6900, 13842], ["8月17日", 22000, 8700, 14881],
@@ -448,6 +526,44 @@ function render(data) {
   }).join("") : `<tr><td colspan="4" style="color:var(--muted)">这段时间还没有记录。</td></tr>`;
   drawChart(data.series || []);
   $("fresh").textContent = "刚刚更新";
+  tween($("pages"), data.pages || 0, sessions);
+  tween($("store"), data.store_bytes || 0, bytes);
+  tween($("today-avoided"), totals.avoided || 0, compact);
+  tween($("today-pct"), totals.reduction_pct || 0, (value) => String(Math.round(value)), "%");
+  const reasons = data.reasons || [];
+  const maxTok = Math.max(1, ...reasons.map((r) => Number(r.tokens || 0)));
+  $("split").innerHTML = reasons.length ? reasons.map((r) => {
+    const w = Math.min(100, Number(r.tokens || 0) / maxTok * 100);
+    return `<div class="row"><span>${esc(r.label)}</span><div class="bar"><i style="width:${w}%"></i></div><span class="tok">${compact(r.tokens)} · ${Math.round(r.pct || 0)}%</span></div>`;
+  }).join("") : "这段时间还没有记录。";
+  $("pause").textContent = data.enabled === false ? "恢复" : "暂停";
+  const feed = data.recent || [];
+  $("feed").innerHTML = feed.length ? feed.map((row) => {
+    const opt = row.opt ? ` · ${esc(row.opt)}` : "";
+    return `<div><b>${esc(row.label || "event")}</b>${opt}  ${compact(row.raw)}→${compact(row.delivered)}</div>`;
+  }).join("") : "等待事件…";
+  const snaps = data.snapshots || [];
+  $("snaps").innerHTML = snaps.length ? snaps.map((s) => `<div>${esc(s.id)}${s.note ? " · " + esc(s.note) : ""} <button type="button" data-restore="${esc(s.id)}">回退</button></div>`).join("") : "";
+  $("snaps").querySelectorAll("[data-restore]").forEach((btn) => {
+    btn.onclick = () => act(`/api/snapshot/restore?id=${encodeURIComponent(btn.dataset.restore)}`, "恢复快照？");
+  });
+}
+function bytes(n) {
+  n = Number(n || 0);
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + "MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + "KB";
+  return String(Math.round(n)) + "B";
+}
+async function act(url, prompt) {
+  if (prompt && !window.confirm(prompt)) return;
+  try {
+    const response = await fetch(url, { method: "POST" });
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error || "failed");
+    load();
+  } catch (error) {
+    window.alert(String(error));
+  }
 }
 async function load() {
   try {
@@ -466,6 +582,13 @@ $("model").onchange = () => { state.model = $("model").value; load(); };
 $("range").onchange = () => { setRange($("range").value); load(); };
 document.querySelectorAll(".tabs [role=tab]").forEach((button) => { button.onclick = () => { setRange(button.dataset.range); load(); }; });
 $("more").onclick = () => $("models").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+$("setup-claude").onclick = () => act("/api/setup?target=claude");
+$("setup-cursor").onclick = () => act("/api/setup?target=cursor");
+$("pause").onclick = () => {
+  const on = !(state.data && state.data.enabled === false);
+  act(on ? "/api/pause" : "/api/resume");
+};
+$("snap").onclick = () => act("/api/snapshot");
 window.addEventListener("resize", () => { if (state.data) drawChart(state.data.series || []); });
 load();
 setInterval(load, 2000);

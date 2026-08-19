@@ -29,9 +29,9 @@ impl DoctorReport {
         } else if self
             .checks
             .iter()
-            .any(|c| !c.ok && matches!(c.name, "claude" | "cursor" | "mcp"))
+            .any(|c| !c.ok && matches!(c.name, "claude" | "cursor" | "windsurf" | "mcp"))
         {
-            lines.push("Next: ctx setup claude  or  ctx setup cursor".into());
+            lines.push("Next: ctx setup claude, cursor, or windsurf".into());
         } else if self.checks.iter().any(|c| !c.ok && c.name == "database") {
             lines.push("Next: ctx init".into());
         } else {
@@ -57,6 +57,7 @@ pub fn collect() -> anyhow::Result<DoctorReport> {
             db_check(&paths),
             claude_hooks_check(home.as_deref()),
             cursor_hooks_check(home.as_deref()),
+            windsurf_mcp_check(home.as_deref()),
             mcp_check(home.as_deref()),
         ],
     })
@@ -188,6 +189,49 @@ fn cursor_hooks_check(home: Option<&Path>) -> Check {
     }
 }
 
+fn windsurf_mcp_check(home: Option<&Path>) -> Check {
+    let Some(home) = home else {
+        return Check {
+            ok: false,
+            name: "windsurf",
+            detail: "no home directory".into(),
+        };
+    };
+    let path = home
+        .join(".codeium")
+        .join("windsurf")
+        .join("mcp_config.json");
+    let present = path.exists()
+        || Path::new("/Applications/Windsurf.app").exists()
+        || home.join(".codeium").join("windsurf").exists();
+    if !present {
+        return Check {
+            ok: true,
+            name: "windsurf",
+            detail: "not installed".into(),
+        };
+    }
+    if !path.exists() {
+        return Check {
+            ok: false,
+            name: "windsurf",
+            detail: "no mcp_config.json — ctx setup windsurf".into(),
+        };
+    }
+    match read_object(&path) {
+        Ok(Some(v)) if mcp_registered(&v) => Check {
+            ok: true,
+            name: "windsurf",
+            detail: "~/.codeium/windsurf/mcp_config.json".into(),
+        },
+        _ => Check {
+            ok: false,
+            name: "windsurf",
+            detail: "mcp not registered — ctx setup windsurf".into(),
+        },
+    }
+}
+
 fn mcp_check(home: Option<&Path>) -> Check {
     let Some(home) = home else {
         return Check {
@@ -200,6 +244,9 @@ fn mcp_check(home: Option<&Path>) -> Check {
         home.join(".claude").join("settings.json"),
         home.join(".claude.json"),
         home.join(".cursor").join("mcp.json"),
+        home.join(".codeium")
+            .join("windsurf")
+            .join("mcp_config.json"),
     ];
     let mut found = Vec::new();
     for path in &candidates {
@@ -228,6 +275,8 @@ fn label_for(path: &Path) -> String {
     let s = path.to_string_lossy();
     if s.contains(".cursor") {
         "cursor".into()
+    } else if s.contains("windsurf") {
+        "windsurf".into()
     } else if s.ends_with(".claude.json") {
         "claude.json".into()
     } else {

@@ -163,6 +163,10 @@ fn token_weight(t: &str) -> u32 {
     }
 }
 
+pub fn token_matches(page: &str, query: &str) -> bool {
+    token_hit(page, query)
+}
+
 fn token_hit(page: &str, query: &str) -> bool {
     if page == query {
         return true;

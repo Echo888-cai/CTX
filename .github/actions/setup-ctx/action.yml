@@ -1,0 +1,58 @@
+name: Setup CTX
+description: Install the CTX CLI from GitHub Releases (falls back to cargo install)
+inputs:
+  version:
+    description: Release tag without the leading v, or latest
+    required: false
+    default: latest
+  init:
+    description: Run ctx init after install
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install CTX
+      shell: bash
+      env:
+        CTX_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        os="$(uname -s)"
+        arch="$(uname -m)"
+        case "$os-$arch" in
+          Darwin-arm64) target="aarch64-apple-darwin" ;;
+          Darwin-x86_64) target="x86_64-apple-darwin" ;;
+          Linux-x86_64) target="x86_64-unknown-linux-gnu" ;;
+          Linux-aarch64) target="aarch64-unknown-linux-gnu" ;;
+          *) echo "unsupported $os-$arch"; exit 1 ;;
+        esac
+        dest="${HOME}/.local/bin"
+        mkdir -p "$dest"
+        tmp="$(mktemp -d)"
+        if [ "$CTX_VERSION" = "latest" ]; then
+          url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
+        else
+          url="https://github.com/Echo888-cai/CTX/releases/download/v${CTX_VERSION}/ctx-${target}.tar.gz"
+        fi
+        if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
+          tar -C "$tmp" -xzf "$tmp/ctx.tar.gz"
+          if [ -f "$tmp/ctx-${target}" ]; then
+            install -m 755 "$tmp/ctx-${target}" "$dest/ctx"
+          elif [ -f "$tmp/ctx" ]; then
+            install -m 755 "$tmp/ctx" "$dest/ctx"
+          else
+            echo "archive missing ctx binary"
+            exit 1
+          fi
+        else
+          echo "prebuilt missing; building with cargo"
+          cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
+          dest="${CARGO_HOME:-$HOME/.cargo}/bin"
+        fi
+        echo "$dest" >> "$GITHUB_PATH"
+        "$dest/ctx" --version || ctx --version
+    - name: ctx init
+      if: inputs.init == 'true'
+      shell: bash
+      run: ctx init

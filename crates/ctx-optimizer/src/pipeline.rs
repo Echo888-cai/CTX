@@ -57,6 +57,40 @@ impl Pipeline {
         }
     }
 
+    /// Built-in names from settings.json `optimizers`. Unknown / .wasm entries
+    /// are skipped (WASM plugins are reserved; they are not executed).
+    pub fn from_names(names: &[String]) -> Self {
+        if names.is_empty() {
+            return Self::v0();
+        }
+        let mut inner: Vec<Box<dyn Optimizer>> = Vec::new();
+        for name in names {
+            let n = name.trim();
+            if n.is_empty() {
+                continue;
+            }
+            if n.ends_with(".wasm") {
+                continue;
+            }
+            match n {
+                "shell" => inner.push(Box::new(crate::ShellGuard)),
+                "file" | "file-read" | "read" => inner.push(Box::new(crate::ReadGuard)),
+                "mcp" => inner.push(Box::new(crate::McpGuard)),
+                "generic" => inner.push(Box::new(crate::GenericGuard)),
+                _ => {}
+            }
+        }
+        if inner.is_empty() {
+            return Self::v0();
+        }
+        Self { inner }
+    }
+
+    #[cfg(test)]
+    fn guard_count(&self) -> usize {
+        self.inner.len()
+    }
+
     pub fn run(&self, input: &OptimizeInput<'_>) -> Option<OptimizeOutput> {
         let mut best: Option<OptimizeOutput> = None;
         for opt in &self.inner {
@@ -105,5 +139,13 @@ mod tests {
         assert!(out.text.contains("401"), "{}", out.text);
         assert!(out.text.contains("auth::login"), "{}", out.text);
         assert!(out.terminal);
+    }
+
+    #[test]
+    fn from_names_can_disable_generic() {
+        let p = Pipeline::from_names(&["shell".into()]);
+        assert_eq!(p.guard_count(), 1);
+        let unknown = Pipeline::from_names(&["nope".into(), "missing.wasm".into()]);
+        assert_eq!(unknown.guard_count(), 4, "fallback to v0");
     }
 }

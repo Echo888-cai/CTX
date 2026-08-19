@@ -51,8 +51,17 @@ impl CtxPaths {
         self.root.join("config.json")
     }
 
+    pub fn snapshots_dir(&self) -> PathBuf {
+        self.root.join("snapshots")
+    }
+
+    pub fn versions_dir(&self) -> PathBuf {
+        self.root.join("versions")
+    }
+
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(self.store_dir())?;
+        std::fs::create_dir_all(self.snapshots_dir())?;
         Ok(())
     }
 }

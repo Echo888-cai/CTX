@@ -16,12 +16,14 @@ pub fn init() -> anyhow::Result<()> {
 
     let claude = detect_claude();
     let cursor = detect_cursor();
+    let windsurf = detect_windsurf();
 
     println!("CTX  {}", paths.root().display());
     println!();
     println!("Detected");
     println!("  {}  Claude Code", mark(claude));
     println!("  {}  Cursor", mark(cursor));
+    println!("  {}  Windsurf", mark(windsurf));
     println!();
 
     if claude {
@@ -32,10 +34,15 @@ pub fn init() -> anyhow::Result<()> {
         setup_cursor()?;
         println!("  ✓  Cursor       hooks + mcp");
     }
-    if !claude && !cursor {
-        println!("  ·  none — later: ctx setup claude  or  ctx setup cursor");
+    if windsurf {
+        setup_windsurf()?;
+        println!("  ✓  Windsurf     mcp");
+    }
+    if !claude && !cursor && !windsurf {
+        println!("  ·  none — later: ctx setup claude, cursor, or windsurf");
     }
 
+    let _ = crate::snapshot::pin();
     println!();
     println!("Next: ctx demo · ctx doctor");
     Ok(())
@@ -55,14 +62,88 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
             println!("Cursor hooks installed. ctx doctor to verify.");
             Ok(())
         }
+        "windsurf" => {
+            setup_windsurf()?;
+            println!("Windsurf MCP installed. Refresh Cascade MCP settings.");
+            Ok(())
+        }
         "all" => {
             setup_claude()?;
             setup_cursor()?;
-            println!("Claude Code + Cursor hooks installed. ctx doctor to verify.");
+            setup_windsurf()?;
+            println!("Claude Code + Cursor + Windsurf installed. ctx doctor to verify.");
             Ok(())
         }
-        other => anyhow::bail!("unknown target {other:?} (use claude, cursor, or all)"),
+        "wizard" => wizard(),
+        other => {
+            anyhow::bail!("unknown target {other:?} (use claude, cursor, windsurf, all, or wizard)")
+        }
     }
+}
+
+pub fn wizard() -> anyhow::Result<()> {
+    use std::io::{self, IsTerminal, Write};
+
+    let paths = CtxPaths::default_home()?;
+    Store::open(paths.clone())?;
+    let mut cfg = Config::load(&paths);
+
+    println!("CTX setup wizard");
+    println!();
+    let claude = detect_claude();
+    let cursor = detect_cursor();
+    let windsurf = detect_windsurf();
+    println!("[1/4] Detected");
+    println!("  {}  Claude Code", mark(claude));
+    println!("  {}  Cursor", mark(cursor));
+    println!("  {}  Windsurf", mark(windsurf));
+
+    let interactive = io::stdin().is_terminal();
+    let strategy = if interactive {
+        println!();
+        println!("[2/4] Context budget");
+        println!("  1. extreme        — fewer tokens, may drop detail");
+        println!("  2. balanced       — recommended");
+        println!("  3. conservative   — keep more of the log");
+        print!("choice [2]: ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        match line.trim() {
+            "1" | "extreme" => "extreme",
+            "3" | "conservative" => "conservative",
+            _ => "balanced",
+        }
+    } else {
+        println!();
+        println!("[2/4] Context budget: balanced (non-interactive)");
+        "balanced"
+    };
+    cfg.budget_strategy = strategy.into();
+    cfg.save(&paths)?;
+
+    println!();
+    println!("[3/4] Installing hooks");
+    if claude {
+        setup_claude()?;
+        println!("  ✓  Claude Code");
+    }
+    if cursor {
+        setup_cursor()?;
+        println!("  ✓  Cursor");
+    }
+    if windsurf {
+        setup_windsurf()?;
+        println!("  ✓  Windsurf");
+    }
+    if !claude && !cursor && !windsurf {
+        println!("  ·  none — later: ctx setup all");
+    }
+
+    println!();
+    println!("[4/4] Done");
+    println!("  ctx app · ctx doctor · ctx snapshot create");
+    Ok(())
 }
 
 fn mark(ok: bool) -> &'static str {
@@ -88,6 +169,13 @@ fn detect_cursor() -> bool {
     Path::new("/Applications/Cursor.app").exists()
         || dirs::home_dir()
             .map(|h| h.join(".cursor").exists())
+            .unwrap_or(false)
+}
+
+fn detect_windsurf() -> bool {
+    Path::new("/Applications/Windsurf.app").exists()
+        || dirs::home_dir()
+            .map(|h| h.join(".codeium").join("windsurf").exists())
             .unwrap_or(false)
 }
 
@@ -152,6 +240,19 @@ fn setup_cursor() -> anyhow::Result<()> {
         .with_context(|| format!("merge mcpServers in {}", mcp_path.display()))?;
     write_json_atomic(&mcp_path, &mcp)?;
     println!("Installed Cursor hooks → {}", hooks_path.display());
+    Ok(())
+}
+
+fn setup_windsurf() -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let dir = home.join(".codeium").join("windsurf");
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let mcp_path = dir.join("mcp_config.json");
+    let mut mcp = read_json_object(&mcp_path)?;
+    merge_mcp(mcp.as_object_mut().unwrap(), &ctx_bin())
+        .with_context(|| format!("merge mcpServers in {}", mcp_path.display()))?;
+    write_json_atomic(&mcp_path, &mcp)?;
+    println!("Installed Windsurf MCP → {}", mcp_path.display());
     Ok(())
 }
 

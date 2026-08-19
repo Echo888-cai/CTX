@@ -2,9 +2,11 @@ use ctx_optimizer::{
     cow_working_set, estimate_tokens, extract_frames, extract_map_hits, extract_regions,
     symbol_at_line, DuplicateGuard, MapHit, OptimizeInput, Pipeline,
 };
-use ctx_pager::{extract_task, merge_tokens, parse_task, WorkingSet};
+use ctx_pager::{extract_task, merge_tokens, parse_task, SemanticRanker, TfIdfRanker, WorkingSet};
 use ctx_protocol::{CtxEvent, CtxUri, EventKind, Frame, ToolKind};
-use ctx_store::{blake3_hex, normalize_hash, FileReadRecord, NewObservation, Store};
+use ctx_store::{
+    blake3_hex, normalize_hash, FileReadRecord, NewObservation, PutBlob, RecordPage, Store,
+};
 
 use crate::config::Config;
 use crate::format::render_virtualized_space;
@@ -48,10 +50,11 @@ struct Delivery {
 impl Runtime {
     pub fn open(store: Store) -> Self {
         let config = Config::load(store.paths());
+        let pipeline = Pipeline::from_names(&config.optimizers);
         Self {
             store,
             config,
-            pipeline: Pipeline::v0(),
+            pipeline,
         }
     }
 
@@ -137,25 +140,24 @@ impl Runtime {
         let put = if event.payload.is_empty() {
             None
         } else {
-            Some(self.store.put_bytes(event.payload.as_bytes())?)
+            Some(
+                self.store
+                    .put_bytes_kind(event.payload.as_bytes(), Some(kind_str))?,
+            )
         };
         let hash = put
             .as_ref()
             .map(|p| p.hash.clone())
             .unwrap_or_else(|| blake3_hex(event.payload.as_bytes()));
         let uri = CtxUri::new(kind_str, &hash);
-        let frames = extract_frames(kind_str, &event.payload);
+        let frames =
+            if kind == ToolKind::File || raw_tokens >= self.config.virtualize_threshold_tokens {
+                extract_frames(kind_str, &event.payload)
+            } else {
+                Vec::new()
+            };
         let task = ingest_task(&event, &frames);
         let task_s = task.join(" ");
-        self.store.record_page(ctx_store::RecordPage {
-            uri: &uri,
-            hash: &hash,
-            body: &event.payload,
-            frames: &frames,
-            raw_tokens,
-            harness: event.harness.as_str(),
-            task: &task_s,
-        })?;
         if !task.is_empty() {
             remember_tokens(&self.store, &event.session, &task)?;
         }
@@ -181,6 +183,12 @@ impl Runtime {
             if let Some(task) = inline {
                 obj.insert("task".into(), serde_json::Value::String(task));
             }
+            let fetched = self.store.uri_was_fetched(&uri.page_key()).unwrap_or(false);
+            obj.insert("fetched_before".into(), serde_json::Value::Bool(fetched));
+            obj.insert(
+                "budget_strategy".into(),
+                serde_json::Value::String(self.config.budget_strategy.clone()),
+            );
         }
 
         if kind == ToolKind::File {
@@ -202,16 +210,22 @@ impl Runtime {
                             raw_tokens,
                         };
                         if let Some(out) = self.pipeline.run(&input) {
-                            return self.finish(Finish {
-                                event: &event,
-                                kind: kind_str,
-                                hash: &hash,
-                                uri: Some(uri.page_key()),
-                                delivered: out.text,
-                                optimizer: Some(out.optimizer),
-                                replaced: true,
-                                raw_tokens,
-                            });
+                            return self.finish(
+                                Finish {
+                                    event: &event,
+                                    kind: kind_str,
+                                    hash: &hash,
+                                    uri: Some(uri.page_key()),
+                                    delivered: out.text,
+                                    optimizer: Some(out.optimizer),
+                                    replaced: true,
+                                    raw_tokens,
+                                },
+                                put.as_ref(),
+                                &uri,
+                                &frames,
+                                &task_s,
+                            );
                         }
                     }
                 }
@@ -242,29 +256,41 @@ impl Runtime {
                 kind_str,
                 event.tool.as_ref().map(|t| t.name.as_str()),
             );
-            return self.finish(Finish {
-                event: &event,
-                kind: kind_str,
-                hash: &hash,
-                uri: Some(uri.page_key()),
-                delivered: text,
-                optimizer: Some("duplicate"),
-                replaced: true,
-                raw_tokens,
-            });
+            return self.finish(
+                Finish {
+                    event: &event,
+                    kind: kind_str,
+                    hash: &hash,
+                    uri: Some(uri.page_key()),
+                    delivered: text,
+                    optimizer: Some("duplicate"),
+                    replaced: true,
+                    raw_tokens,
+                },
+                put.as_ref(),
+                &uri,
+                &frames,
+                &task_s,
+            );
         }
 
         if raw_tokens < self.config.virtualize_threshold_tokens {
-            return self.finish(Finish {
-                event: &event,
-                kind: kind_str,
-                hash: &hash,
-                uri: Some(uri.page_key()),
-                delivered: event.payload.clone(),
-                optimizer: None,
-                replaced: false,
-                raw_tokens,
-            });
+            return self.finish(
+                Finish {
+                    event: &event,
+                    kind: kind_str,
+                    hash: &hash,
+                    uri: Some(uri.page_key()),
+                    delivered: event.payload.clone(),
+                    optimizer: None,
+                    replaced: false,
+                    raw_tokens,
+                },
+                put.as_ref(),
+                &uri,
+                &frames,
+                &task_s,
+            );
         }
 
         let input = OptimizeInput {
@@ -300,16 +326,22 @@ impl Runtime {
             } else {
                 Some(out.optimizer)
             };
-            return self.finish(Finish {
-                event: &event,
-                kind: kind_str,
-                hash: &hash,
-                uri: Some(uri.page_key()),
-                delivered: delivery.text,
-                optimizer: opt,
-                replaced: true,
-                raw_tokens,
-            });
+            return self.finish(
+                Finish {
+                    event: &event,
+                    kind: kind_str,
+                    hash: &hash,
+                    uri: Some(uri.page_key()),
+                    delivered: delivery.text,
+                    optimizer: opt,
+                    replaced: true,
+                    raw_tokens,
+                },
+                put.as_ref(),
+                &uri,
+                &frames,
+                &task_s,
+            );
         }
 
         let delivery = self.pick_delivered(
@@ -325,19 +357,32 @@ impl Runtime {
             &maps,
         )?;
         let replaced = delivery.cow || delivery.text != event.payload;
-        self.finish(Finish {
-            event: &event,
-            kind: kind_str,
-            hash: &hash,
-            uri: Some(uri.page_key()),
-            delivered: delivery.text,
-            optimizer: if delivery.cow { Some("cow") } else { None },
-            replaced,
-            raw_tokens,
-        })
+        self.finish(
+            Finish {
+                event: &event,
+                kind: kind_str,
+                hash: &hash,
+                uri: Some(uri.page_key()),
+                delivered: delivery.text,
+                optimizer: if delivery.cow { Some("cow") } else { None },
+                replaced,
+                raw_tokens,
+            },
+            put.as_ref(),
+            &uri,
+            &frames,
+            &task_s,
+        )
     }
 
-    fn finish(&self, f: Finish<'_>) -> ctx_store::Result<IngestResult> {
+    fn finish(
+        &self,
+        f: Finish<'_>,
+        blob: Option<&PutBlob>,
+        page_uri: &CtxUri,
+        frames: &[Frame],
+        task: &str,
+    ) -> ctx_store::Result<IngestResult> {
         let delivered_tokens = estimate_tokens(&f.delivered);
         let avoided = f.raw_tokens.saturating_sub(delivered_tokens);
         let reasons = if let Some(name) = f.optimizer {
@@ -364,21 +409,34 @@ impl Runtime {
             source_path.as_deref(),
             &[],
         );
-        self.store.insert_observation(NewObservation {
-            session_id: f.event.session.clone(),
-            event_type: f.event.event.as_str().to_string(),
-            tool_type: Some(f.kind.to_string()),
-            tool_name: f.event.tool.as_ref().map(|t| t.name.clone()),
-            uri: f.uri.clone(),
-            content_hash: f.hash.to_string(),
-            raw_tokens: f.raw_tokens,
-            delivered_tokens,
-            avoided_tokens: avoided,
-            optimizer: f.optimizer.map(|s| s.to_string()),
-            reasons,
-            referenced,
-            source_path,
-        })?;
+        self.store.commit_ingest(
+            blob,
+            Some(RecordPage {
+                uri: page_uri,
+                hash: f.hash,
+                body: &f.event.payload,
+                frames,
+                raw_tokens: f.raw_tokens,
+                harness: f.event.harness.as_str(),
+                task,
+            }),
+            NewObservation {
+                session_id: f.event.session.clone(),
+                event_type: f.event.event.as_str().to_string(),
+                tool_type: Some(f.kind.to_string()),
+                tool_name: f.event.tool.as_ref().map(|t| t.name.clone()),
+                uri: f.uri.clone(),
+                content_hash: f.hash.to_string(),
+                raw_tokens: f.raw_tokens,
+                delivered_tokens,
+                avoided_tokens: avoided,
+                optimizer: f.optimizer.map(|s| s.to_string()),
+                reasons,
+                referenced,
+                source_path,
+            },
+        )?;
+        self.schedule_prefetch(f.event, f.hash);
         Ok(IngestResult {
             delivered: f.delivered,
             replaced: f.replaced,
@@ -391,6 +449,7 @@ impl Runtime {
     }
 
     pub fn fetch(&self, uri: &str, query: Option<&str>) -> ctx_store::Result<String> {
+        let started = std::time::Instant::now();
         let parsed =
             CtxUri::parse(uri).map_err(|e| ctx_store::StoreError::NotFound(e.to_string()))?;
         let key = parsed.page_key();
@@ -402,7 +461,7 @@ impl Runtime {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .or_else(|| query.map(str::trim).filter(|s| !s.is_empty()));
-        match q {
+        let out = match q {
             Some("*" | "full") => Ok(raw),
             Some(name) => {
                 if let Some(frame) = self.store.find_frame(&key, name)? {
@@ -430,7 +489,9 @@ impl Runtime {
                     .collect();
                 Ok(bounded_preview_frames(&raw, &key, &listed))
             }
-        }
+        };
+        ctx_store::record_page_fault(started.elapsed());
+        out
     }
 
     pub fn read_file(&self, path: &str, query: Option<&str>) -> anyhow::Result<String> {
@@ -630,6 +691,36 @@ impl Runtime {
         };
         let prev = String::from_utf8_lossy(&bytes);
         Ok(cow_working_set(&prev, &prev_uri, payload).map(|text| (text, prev_uri)))
+    }
+
+    fn schedule_prefetch(&self, event: &CtxEvent, hash: &str) {
+        let mut hashes = Vec::new();
+        for hit in extract_map_hits(&event.payload) {
+            if let Ok(Some(prev)) = self.store.get_file_read(&hit.path) {
+                if prev.content_hash != hash {
+                    hashes.push(prev.content_hash);
+                }
+            }
+        }
+        let task = parse_task(&self.store.session_task(&event.session).unwrap_or_default());
+        if !task.is_empty() {
+            if let Ok(pages) = self.store.recent_pages(48) {
+                for (i, score) in TfIdfRanker.rank(&task, &pages) {
+                    if score <= 0.01 {
+                        break;
+                    }
+                    if pages[i].hash != hash {
+                        hashes.push(pages[i].hash.clone());
+                    }
+                    if hashes.len() >= 4 {
+                        break;
+                    }
+                }
+            }
+        }
+        hashes.retain(|h| h != hash);
+        hashes.truncate(4);
+        self.store.prefetch(&hashes);
     }
 
     fn mapped_pages(&self, hits: &[MapHit], cwd: Option<&str>) -> ctx_store::Result<Vec<String>> {
@@ -1041,6 +1132,21 @@ mod tests {
                 || (out.delivered.contains("src/auth.rs") && out.delivered.contains("#login")),
             "{}",
             out.delivered
+        );
+    }
+
+    #[test]
+    fn tiny_shell_skips_frame_extract() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let event =
+            CtxEvent::tool_output("s-tiny", Harness::ClaudeCode, ToolRef::new("Bash"), "ok\n");
+        let result = rt.ingest(event).unwrap();
+        let uri = result.uri.expect("uri");
+        assert!(
+            rt.store.frames_for(&uri).unwrap().is_empty(),
+            "small payloads should skip frame extraction"
         );
     }
 }
