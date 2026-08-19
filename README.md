@@ -36,21 +36,35 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-Prebuilt first. Rust only if GitHub has no binary for your machine.
+One line. Uses a GitHub Release binary when a `v*` tag exists; otherwise it installs Rust and builds locally.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
-Other channels:
+Always works from source:
 
 ```bash
-# Homebrew (copy dist/homebrew/ctx.rb into a tap, or)
-brew install --formula https://raw.githubusercontent.com/Echo888-cai/CTX/main/dist/homebrew/ctx.rb
+cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
+ctx init
+ctx setup --wizard
+```
 
-npx @ctx-labs/install
+From a clone of this repo:
 
-docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ghcr.io/echo888-cai/ctx status
+```bash
+bash install.sh
+# or
+cargo install --path apps/cli --locked --force
+ctx init
+ctx setup all    # Claude, Cursor, Windsurf, VS Code, Continue, JetBrains, Aider, Codex
+```
+
+Docker from this tree (no registry required):
+
+```bash
+docker build -t ctx .
+docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ctx status
 ```
 
 Then:
@@ -63,15 +77,7 @@ ctx setup --wizard      # detect harnesses and pick a budget
 
 The big number is **avoided tokens**. Raw context stayed on disk. `ctx status` is the same data in the terminal.
 
-From this repo:
-
-```bash
-bash install.sh
-# or
-cargo install --path apps/cli --locked --force
-ctx init
-ctx setup all    # Claude, Cursor, Windsurf, VS Code, Continue, JetBrains, Aider, Codex
-```
+After you push a `v*` tag, the release workflow publishes tarballs and `ghcr.io/echo888-cai/ctx`. Homebrew can then use `dist/homebrew/ctx.rb`.
 
 ## What the model sees
 

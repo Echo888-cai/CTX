@@ -36,20 +36,35 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-先下预编译包。没有对应二进制才装 Rust。
+一行。有 `v*` Release 就下预编译包；没有则装 Rust 并本地编译。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
-其它渠道：
+从源码安装，现在就能用：
 
 ```bash
-brew install --formula https://raw.githubusercontent.com/Echo888-cai/CTX/main/dist/homebrew/ctx.rb
+cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
+ctx init
+ctx setup --wizard
+```
 
-npx @ctx-labs/install
+在本仓库：
 
-docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ghcr.io/echo888-cai/ctx status
+```bash
+bash install.sh
+# 或
+cargo install --path apps/cli --locked --force
+ctx init
+ctx setup all    # Claude、Cursor、Windsurf、VS Code、Continue、JetBrains、Aider、Codex
+```
+
+Docker 用这份代码构建（不依赖镜像仓库）：
+
+```bash
+docker build -t ctx .
+docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ctx status
 ```
 
 然后：
@@ -62,15 +77,7 @@ ctx setup --wizard      # 探测 harness，选预算
 
 最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
 
-在本仓库：
-
-```bash
-bash install.sh
-# 或
-cargo install --path apps/cli --locked --force
-ctx init
-ctx setup all    # Claude、Cursor、Windsurf、VS Code、Continue、JetBrains、Aider、Codex
-```
+推送 `v*` tag 之后，Release workflow 会发布 tarball 和 `ghcr.io/echo888-cai/ctx`。那时再用 `dist/homebrew/ctx.rb`。
 
 ## 模型看到什么
 
