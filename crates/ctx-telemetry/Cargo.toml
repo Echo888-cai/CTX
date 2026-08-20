@@ -4,9 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Context efficiency metrics — avoided tokens, never invented dollars"
+description = "Context efficiency metrics — avoided tokens and API-equivalent dollars when priced"
 
 [dependencies]
 ctx-pager.workspace = true
 ctx-store.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

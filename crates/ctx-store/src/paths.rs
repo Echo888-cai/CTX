@@ -51,6 +51,14 @@ impl CtxPaths {
         self.root.join("config.json")
     }
 
+    pub fn prices_path(&self) -> PathBuf {
+        self.root.join("prices.json")
+    }
+
+    pub fn official_prices_path(&self) -> PathBuf {
+        self.root.join("prices.official.json")
+    }
+
     pub fn snapshots_dir(&self) -> PathBuf {
         self.root.join("snapshots")
     }

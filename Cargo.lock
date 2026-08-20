@@ -295,6 +295,8 @@ dependencies = [
  "ctx-pager",
  "ctx-store",
  "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -1,11 +1,13 @@
 use ctx_optimizer::{
-    cow_working_set, estimate_tokens, extract_frames, extract_map_hits, extract_regions,
-    symbol_at_line, DuplicateGuard, MapHit, OptimizeInput, Pipeline,
+    cdc_working_set, chunk_text, cow_working_set, estimate_tokens, estimate_tokens_for,
+    extract_frames, extract_map_hits, extract_regions, sniff_token_kind, symbol_at_line, Chunk,
+    DuplicateGuard, MapHit, OptimizeInput, Pipeline, MIN_GAIN_TOKENS,
 };
 use ctx_pager::{extract_task, merge_tokens, parse_task, SemanticRanker, TfIdfRanker, WorkingSet};
 use ctx_protocol::{CtxEvent, CtxUri, EventKind, Frame, ToolKind};
 use ctx_store::{
-    blake3_hex, normalize_hash, FileReadRecord, NewObservation, PutBlob, RecordPage, Store,
+    blake3_hex, normalize_hash, simhash64, FileReadRecord, NewObservation, PutBlob, RecordPage,
+    Store,
 };
 
 use crate::config::Config;
@@ -29,6 +31,7 @@ pub struct IngestResult {
     pub delivered_tokens: u32,
     pub avoided_tokens: u32,
     pub optimizer: Option<String>,
+    pub deduped: bool,
 }
 
 struct Finish<'a> {
@@ -67,6 +70,10 @@ impl Runtime {
             );
         }
         Ok(Self::open(store))
+    }
+
+    pub fn is_harness_disabled(&self, harness: ctx_protocol::Harness) -> bool {
+        self.config.is_harness_disabled(harness)
     }
 
     pub fn ingest(&self, event: CtxEvent) -> ctx_store::Result<IngestResult> {
@@ -122,7 +129,7 @@ impl Runtime {
             EventKind::ToolOutput | EventKind::FileRead => {}
         }
 
-        if !self.config.enabled {
+        if !self.config.enabled || self.config.is_harness_disabled(event.harness) {
             return Ok(passthrough(
                 event.payload.clone(),
                 estimate_tokens(&event.payload),
@@ -135,7 +142,7 @@ impl Runtime {
             .map(|t| t.kind)
             .unwrap_or(ToolKind::Generic);
         let kind_str = kind.as_str();
-        let raw_tokens = estimate_tokens(&event.payload);
+        let raw_tokens = tokens_of(kind_str, &event.payload);
 
         let put = if event.payload.is_empty() {
             None
@@ -189,10 +196,21 @@ impl Runtime {
                 "budget_strategy".into(),
                 serde_json::Value::String(self.config.budget_strategy.clone()),
             );
+            let occupancy = self.store.session_occupancy_pct(&event.session).unwrap_or(0);
+            let compacting = self.store.session_is_compacting(&event.session).unwrap_or(false);
+            let tune = self.store.latest_optimizer_tune().unwrap_or(1.0);
+            obj.insert(
+                "occupancy_pct".into(),
+                serde_json::Value::Number(occupancy.into()),
+            );
+            obj.insert("budget_tune".into(), serde_json::json!(tune));
+            obj.insert("compacting".into(), serde_json::Value::Bool(compacting));
         }
 
         if kind == ToolKind::File {
             if let Some(path) = event.metadata.get("path").and_then(|v| v.as_str()) {
+                let chunks = chunk_text(&event.payload);
+                let chunks_json = serde_json::to_value(&chunks).unwrap_or_else(|_| serde_json::json!([]));
                 if let Some(prev) = self.store.get_file_read(path)? {
                     if prev.content_hash == hash && raw_tokens >= 80 {
                         if let Some(obj) = metadata.as_object_mut() {
@@ -227,6 +245,45 @@ impl Runtime {
                                 &task_s,
                             );
                         }
+                    } else if raw_tokens >= 80 {
+                        let prev_chunks: Vec<Chunk> =
+                            serde_json::from_value(prev.chunks.clone()).unwrap_or_default();
+                        if let Some(delta) =
+                            cdc_working_set(&prev_chunks, &chunks, &event.payload, &uri.to_string())
+                        {
+                            if tokens_of(kind_str, &delta) + MIN_GAIN_TOKENS < raw_tokens {
+                                let regions = extract_regions(&event.payload);
+                                self.store.upsert_file_read(&FileReadRecord {
+                                    path: path.to_string(),
+                                    content_hash: hash.clone(),
+                                    last_uri: Some(uri.to_string()),
+                                    last_tokens: raw_tokens,
+                                    regions: serde_json::Value::Array(
+                                        regions
+                                            .into_iter()
+                                            .map(serde_json::Value::String)
+                                            .collect(),
+                                    ),
+                                    chunks: chunks_json.clone(),
+                                })?;
+                                return self.finish(
+                                    Finish {
+                                        event: &event,
+                                        kind: kind_str,
+                                        hash: &hash,
+                                        uri: Some(uri.page_key()),
+                                        delivered: delta,
+                                        optimizer: Some("cdc"),
+                                        replaced: true,
+                                        raw_tokens,
+                                    },
+                                    put.as_ref(),
+                                    &uri,
+                                    &frames,
+                                    &task_s,
+                                );
+                            }
+                        }
                     }
                 }
                 let regions = extract_regions(&event.payload);
@@ -238,24 +295,45 @@ impl Runtime {
                     regions: serde_json::Value::Array(
                         regions.into_iter().map(serde_json::Value::String).collect(),
                     ),
+                    chunks: chunks_json,
                 })?;
             }
         }
 
-        let hit = self.store.remember_fingerprint(
-            &hash,
-            &normalize_hash(&event.payload),
-            Some(&uri.to_string()),
-        )?;
+        let hit = if let Some(key) = event
+            .metadata
+            .get("dedup_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            if self.store.observation_exists_for_dedup(key)? {
+                None
+            } else {
+                Some(self.remember_payload(&hash, &event.payload, &uri.to_string())?)
+            }
+        } else {
+            Some(self.remember_payload(&hash, &event.payload, &uri.to_string())?)
+        };
 
+        if let Some(hit) = hit {
         if hit.count >= 2 && raw_tokens >= 80 {
             let ref_uri = hit.uri.unwrap_or_else(|| uri.to_string());
-            let text = DuplicateGuard::render(
-                &ref_uri,
-                hit.count,
-                kind_str,
-                event.tool.as_ref().map(|t| t.name.as_str()),
-            );
+            let text = if hit.near {
+                DuplicateGuard::render_near(
+                    &ref_uri,
+                    hit.count,
+                    kind_str,
+                    event.tool.as_ref().map(|t| t.name.as_str()),
+                    Some(hit.hamming),
+                )
+            } else {
+                DuplicateGuard::render(
+                    &ref_uri,
+                    hit.count,
+                    kind_str,
+                    event.tool.as_ref().map(|t| t.name.as_str()),
+                )
+            };
             return self.finish(
                 Finish {
                     event: &event,
@@ -272,6 +350,7 @@ impl Runtime {
                 &frames,
                 &task_s,
             );
+        }
         }
 
         if raw_tokens < self.config.virtualize_threshold_tokens {
@@ -383,8 +462,9 @@ impl Runtime {
         frames: &[Frame],
         task: &str,
     ) -> ctx_store::Result<IngestResult> {
-        let delivered_tokens = estimate_tokens(&f.delivered);
+        let delivered_tokens = tokens_of(f.kind, &f.delivered);
         let avoided = f.raw_tokens.saturating_sub(delivered_tokens);
+        let shadow = self.config.is_shadow(f.event.harness);
         let reasons = if let Some(name) = f.optimizer {
             serde_json::json!([{ "label": reason_label(name), "tokens": avoided }])
         } else {
@@ -409,7 +489,14 @@ impl Runtime {
             source_path.as_deref(),
             &[],
         );
-        self.store.commit_ingest(
+        let dedup_key = f
+            .event
+            .metadata
+            .get("dedup_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let id = self.store.commit_ingest(
             blob,
             Some(RecordPage {
                 uri: page_uri,
@@ -422,6 +509,13 @@ impl Runtime {
             }),
             NewObservation {
                 session_id: f.event.session.clone(),
+                model: f
+                    .event
+                    .metadata
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 event_type: f.event.event.as_str().to_string(),
                 tool_type: Some(f.kind.to_string()),
                 tool_name: f.event.tool.as_ref().map(|t| t.name.clone()),
@@ -434,17 +528,37 @@ impl Runtime {
                 reasons,
                 referenced,
                 source_path,
+                dedup_key: dedup_key.clone(),
+                shadow,
             },
         )?;
+        if let Some(name) = f.optimizer {
+            let _ = self.store.record_optimizer(name, avoided);
+        }
+        let model = f
+            .event
+            .metadata
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let _ = self
+            .store
+            .add_session_tokens(&f.event.session, delivered_tokens, window_for_model(model));
         self.schedule_prefetch(f.event, f.hash);
+        let delivered = if shadow {
+            f.event.payload.clone()
+        } else {
+            f.delivered
+        };
         Ok(IngestResult {
-            delivered: f.delivered,
-            replaced: f.replaced,
+            delivered,
+            replaced: f.replaced && !shadow,
             uri: f.uri,
             raw_tokens: f.raw_tokens,
-            delivered_tokens,
+            delivered_tokens: if shadow { f.raw_tokens } else { delivered_tokens },
             avoided_tokens: avoided,
             optimizer: f.optimizer.map(|s| s.to_string()),
+            deduped: id == 0 && !dedup_key.is_empty(),
         })
     }
 
@@ -461,7 +575,7 @@ impl Runtime {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .or_else(|| query.map(str::trim).filter(|s| !s.is_empty()));
-        let out = match q {
+        let out: ctx_store::Result<String> = match q {
             Some("*" | "full") => Ok(raw),
             Some(name) => {
                 if let Some(frame) = self.store.find_frame(&key, name)? {
@@ -490,8 +604,11 @@ impl Runtime {
                 Ok(bounded_preview_frames(&raw, &key, &listed))
             }
         };
+        let body = out?;
+        let fetched = estimate_tokens(&body);
+        let _ = self.store.add_refetch(&key, fetched);
         ctx_store::record_page_fault(started.elapsed());
-        out
+        Ok(body)
     }
 
     pub fn read_file(&self, path: &str, query: Option<&str>) -> anyhow::Result<String> {
@@ -768,6 +885,26 @@ impl Runtime {
         }
         Ok(symbol_from_disk(cwd, &hit.path, line))
     }
+
+    fn remember_payload(
+        &self,
+        hash: &str,
+        payload: &str,
+        uri: &str,
+    ) -> ctx_store::Result<ctx_store::FingerprintHit> {
+        let sim = if payload.len() > 2 * 1024 * 1024 {
+            0
+        } else {
+            simhash64(payload)
+        };
+        self.store.remember_fingerprint_near(
+            hash,
+            &normalize_hash(payload),
+            Some(uri),
+            sim,
+            self.config.near_duplicate_hamming,
+        )
+    }
 }
 
 fn enclosing_symbol(frames: &[Frame], line: u32) -> Option<String> {
@@ -866,6 +1003,24 @@ fn trim_greeting(ws: &WorkingSet, budget: u32, pages: usize) -> String {
     banner.to_string()
 }
 
+fn tokens_of(kind: &str, text: &str) -> u32 {
+    estimate_tokens_for(sniff_token_kind(kind, text), text)
+}
+
+fn window_for_model(model: &str) -> u32 {
+    let m = model.to_ascii_lowercase();
+    if m.contains("opus")
+        || m.contains("sonnet")
+        || m.contains("gpt-5")
+        || m.contains("gpt-4.1")
+        || m.contains("gpt-4o")
+    {
+        200_000
+    } else {
+        128_000
+    }
+}
+
 fn passthrough(delivered: String, tokens: u32) -> IngestResult {
     IngestResult {
         delivered,
@@ -875,6 +1030,7 @@ fn passthrough(delivered: String, tokens: u32) -> IngestResult {
         delivered_tokens: tokens,
         avoided_tokens: 0,
         optimizer: None,
+        deduped: false,
     }
 }
 
@@ -1148,5 +1304,157 @@ mod tests {
             rt.store.frames_for(&uri).unwrap().is_empty(),
             "small payloads should skip frame extraction"
         );
+    }
+
+    fn noisy_log() -> String {
+        let mut payload = String::from("running 400 tests\n");
+        for i in 0..400 {
+            payload.push_str(&format!("test t{i} ... ok\n"));
+        }
+        payload.push_str("test auth::login ... FAILED\n\nfailures:\n\n---- auth::login stdout ----\nleft: 401\nright: 200\n");
+        payload
+    }
+
+    #[test]
+    fn refetch_is_netted_out_of_savings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let result = rt
+            .ingest(CtxEvent::tool_output(
+                "s-net",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                noisy_log(),
+            ))
+            .unwrap();
+        assert!(result.avoided_tokens > 0);
+        let gross = result.avoided_tokens as u64;
+        let before = rt.store.totals_since(0).unwrap();
+        assert_eq!(before.avoided, gross);
+        assert_eq!(before.net_avoided(), gross);
+        let uri = result.uri.expect("uri");
+        let fetched = rt.fetch(&uri, Some("*")).unwrap();
+        let refetched = estimate_tokens(&fetched) as u64;
+        assert!(refetched > 0, "full fetch should return original tokens");
+        let after = rt.store.totals_since(0).unwrap();
+        assert_eq!(after.avoided, gross, "gross savings stay");
+        assert_eq!(after.refetched, refetched);
+        assert_eq!(after.net_avoided(), gross.saturating_sub(refetched));
+    }
+
+    #[test]
+    fn shadow_mode_reports_savings_without_changing_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CtxPaths::from_root(dir.path().to_path_buf());
+        let mut cfg = Config::default();
+        cfg.shadow_mode = true;
+        cfg.save(&paths).unwrap();
+        let store = Store::open(paths).unwrap();
+        let rt = Runtime::open(store);
+        let payload = noisy_log();
+        let result = rt
+            .ingest(CtxEvent::tool_output(
+                "s-shadow",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                payload.clone(),
+            ))
+            .unwrap();
+        assert_eq!(result.delivered, payload);
+        assert!(!result.replaced);
+        assert!(result.avoided_tokens > 0);
+        let obs = rt.store.observations_for_session("s-shadow").unwrap();
+        assert!(obs.iter().any(|o| o.avoided_tokens > 0), "{obs:?}");
+    }
+
+    #[test]
+    fn disabled_harness_passes_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CtxPaths::from_root(dir.path().to_path_buf());
+        let mut cfg = Config::default();
+        cfg.disabled_harnesses = vec!["claude-code".into()];
+        cfg.save(&paths).unwrap();
+        let store = Store::open(paths).unwrap();
+        let rt = Runtime::open(store);
+        let payload = noisy_log();
+        let result = rt
+            .ingest(CtxEvent::tool_output(
+                "s-off",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                payload.clone(),
+            ))
+            .unwrap();
+        assert_eq!(result.delivered, payload);
+        assert!(!result.replaced);
+        assert_eq!(result.avoided_tokens, 0);
+        assert!(rt.store.observations_for_session("s-off").unwrap().is_empty());
+    }
+
+    #[test]
+    fn edited_file_uses_cdc_delta_when_chunks_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let mut src = "hello world\n".repeat(900);
+        src.push_str("pub fn keep() { 1 }\n");
+        let first = CtxEvent {
+            event: EventKind::FileRead,
+            session: "s-cdc".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Read")),
+            payload: src.clone(),
+            task_context: None,
+            metadata: serde_json::json!({"path": "src/big.rs"}),
+        };
+        rt.ingest(first).unwrap();
+        src.replace_range(24..29, "HELLO");
+        let second = CtxEvent {
+            event: EventKind::FileRead,
+            session: "s-cdc".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Read")),
+            payload: src,
+            task_context: None,
+            metadata: serde_json::json!({"path": "src/big.rs"}),
+        };
+        let out = rt.ingest(second).unwrap();
+        assert!(out.replaced, "{}", out.delivered);
+        assert!(
+            out.optimizer.as_deref() == Some("cdc") || out.delivered.contains("ctx://"),
+            "opt={:?} delivered={}",
+            out.optimizer,
+            out.delivered
+        );
+        assert!(out.delivered_tokens + 40 < out.raw_tokens);
+    }
+
+    #[test]
+    fn near_duplicate_shell_output_collapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let a = "error: boom\nleft: 401\nright: 200\n".repeat(40);
+        let b = a.replace("401", "402");
+        let first = rt
+            .ingest(CtxEvent::tool_output(
+                "s-near",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                a,
+            ))
+            .unwrap();
+        assert!(first.raw_tokens >= 80);
+        let second = rt
+            .ingest(CtxEvent::tool_output(
+                "s-near",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                b,
+            ))
+            .unwrap();
+        assert_eq!(second.optimizer.as_deref(), Some("duplicate"), "{}", second.delivered);
+        assert!(second.delivered.contains("dup"), "{}", second.delivered);
     }
 }

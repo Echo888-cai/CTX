@@ -9,3 +9,4 @@
 .vscode/
 coverage/
 *.profraw
+apps/macos/dist/

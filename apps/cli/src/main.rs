@@ -3,6 +3,7 @@ mod ci;
 mod demo;
 mod doctor;
 mod exec;
+mod harnesses;
 mod inspect;
 mod search;
 mod setup;
@@ -120,6 +121,9 @@ enum Commands {
         /// Remove the login dashboard
         #[arg(long)]
         uninstall_service: bool,
+        /// Install the macOS menu bar app
+        #[arg(long)]
+        install_app: bool,
     },
     /// Serve the CTX MCP (stdio)
     Mcp,
@@ -310,7 +314,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             no_open,
             install_service,
             uninstall_service,
-        }) => app::run(port, !no_open, install_service, uninstall_service),
+            install_app,
+        }) => app::run(
+            port,
+            !no_open,
+            install_service,
+            uninstall_service,
+            install_app,
+        ),
         Some(Commands::Mcp) => {
             let rt = Runtime::open_default().context("open CTX store")?;
             ctx_mcp::serve(rt)?;

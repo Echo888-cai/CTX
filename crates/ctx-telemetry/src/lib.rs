@@ -1,11 +1,19 @@
 //! Honest metrics.
 //!
-//! We report context avoided and estimated reduction. We do not convert
-//! tokens into dollars unless model and price are both explicit.
+//! We report context avoided and estimated reduction. Dollars use Cursor's
+//! public input list price (bundled catalog, official models-and-pricing
+//! refresh, prices.json, or default_billing_model).
+
+mod prices;
 
 use ctx_pager::{start_of_today, start_of_week};
 use ctx_store::{Store, TokenTotals};
 use serde::Serialize;
+
+pub use prices::{
+    catalog_json, is_auto_id, official_price_meta, refresh_official_prices,
+    refresh_official_prices_now, round_usd, CatalogEntry, PriceBook, PriceQuote, PriceSource,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {

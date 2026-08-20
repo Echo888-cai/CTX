@@ -65,6 +65,16 @@ pub fn record_hook(d: Duration) {
     hooks().record(d);
 }
 
+/// Hook handler latency in milliseconds: (p50, p95, sample_count).
+pub fn hook_latency_ms() -> (f64, f64, u64) {
+    let s = hooks();
+    (
+        s.quantile(0.5) * 1_000.0,
+        s.quantile(0.95) * 1_000.0,
+        s.count(),
+    )
+}
+
 impl Store {
     pub fn prometheus_text(&self) -> Result<String> {
         let pages = self.page_count()?;

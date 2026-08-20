@@ -41,6 +41,9 @@ fn handle_hook_inner(runtime: &Runtime, value: &Value) -> anyhow::Result<HookRes
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let harness = detect_harness(value);
+    if !runtime.config.enabled || runtime.is_harness_disabled(harness) {
+        return Ok(hook_passthrough(event_name, harness));
+    }
 
     match event_name {
         "PreToolUse" | "preToolUse" => pre_tool_use(runtime, value, harness),
@@ -59,11 +62,74 @@ fn handle_hook_inner(runtime: &Runtime, value: &Value) -> anyhow::Result<HookRes
             stdout: json!({ "permission": "allow" }).to_string(),
             deny: false,
         }),
+        "subagentStart" | "afterAgentResponse" => remember_model_only(runtime, value, harness),
         _ => Ok(HookResponse {
             stdout: String::new(),
             deny: false,
         }),
     }
+}
+
+fn hook_passthrough(event_name: &str, harness: Harness) -> HookResponse {
+    let stdout = match event_name {
+        "PreToolUse" | "preToolUse" => match harness {
+            Harness::ClaudeCode => json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow"
+                }
+            })
+            .to_string(),
+            _ => json!({ "permission": "allow" }).to_string(),
+        },
+        "beforeReadFile" | "beforeShellExecution" => json!({ "permission": "allow" }).to_string(),
+        _ => String::new(),
+    };
+    HookResponse {
+        stdout,
+        deny: false,
+    }
+}
+
+fn call_id(value: &Value) -> String {
+    ["generation_id", "tool_use_id", "tool_call_id"]
+        .into_iter()
+        .find_map(|key| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn observation_dedup_key(session: &str, value: &Value, payload: &str) -> String {
+    let hash = ctx_store::blake3_hex(payload.as_bytes());
+    let call = call_id(value);
+    if !call.is_empty() {
+        return ctx_store::blake3_hex(format!("{session}|{call}|{hash}").as_bytes());
+    }
+    let model = hook_model(value).unwrap_or("");
+    ctx_store::blake3_hex(format!("{session}|{model}|{hash}").as_bytes())
+}
+
+fn remember_model_only(
+    runtime: &Runtime,
+    value: &Value,
+    harness: Harness,
+) -> anyhow::Result<HookResponse> {
+    let _ = runtime.store.ensure_session_with_model(
+        &session_id(value),
+        harness.as_str(),
+        value.get("cwd").and_then(|v| v.as_str()),
+        hook_model(value),
+    );
+    Ok(HookResponse {
+        stdout: String::new(),
+        deny: false,
+    })
 }
 
 fn detect_harness(value: &Value) -> Harness {
@@ -178,6 +244,7 @@ fn post_tool_use(
     let mut metadata = json!({
         "cwd": value.get("cwd"),
     });
+    insert_model(&mut metadata, value);
     if let Some(path) = extract_path(value) {
         insert_meta(&mut metadata, "path", path);
     }
@@ -195,6 +262,11 @@ fn post_tool_use(
             insert_meta(&mut metadata, "limit", n);
         }
     }
+    insert_meta(
+        &mut metadata,
+        "dedup_key",
+        observation_dedup_key(&session_id(value), value, &payload),
+    );
 
     let event = CtxEvent {
         event: EventKind::from_hook_name(event_name),
@@ -289,6 +361,13 @@ fn before_read_file(
     let content = value.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let tokens = estimate_tokens(content);
     if !content.is_empty() {
+        let mut metadata = json!({ "path": path, "cwd": value.get("cwd") });
+        insert_model(&mut metadata, value);
+        insert_meta(
+            &mut metadata,
+            "dedup_key",
+            observation_dedup_key(&session_id(value), value, content),
+        );
         let event = CtxEvent {
             event: EventKind::FileRead,
             session: session_id(value),
@@ -296,7 +375,7 @@ fn before_read_file(
             tool: Some(ToolRef::new("Read")),
             payload: content.to_string(),
             task_context: None,
-            metadata: json!({ "path": path, "cwd": value.get("cwd") }),
+            metadata,
         };
         let _ = runtime.ingest(event);
     }
@@ -332,6 +411,17 @@ fn after_shell(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Re
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let mut metadata = json!({
+        "cwd": value.get("cwd"),
+        "command": value.get("command"),
+        "exit_code": extract_exit_code(value, "afterShellExecution"),
+    });
+    insert_model(&mut metadata, value);
+    insert_meta(
+        &mut metadata,
+        "dedup_key",
+        observation_dedup_key(&session_id(value), value, &payload),
+    );
     let event = CtxEvent {
         event: EventKind::ToolOutput,
         session: session_id(value),
@@ -339,11 +429,7 @@ fn after_shell(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Re
         tool: Some(ToolRef::new("Shell")),
         payload,
         task_context: None,
-        metadata: json!({
-            "cwd": value.get("cwd"),
-            "command": value.get("command"),
-            "exit_code": extract_exit_code(value, "afterShellExecution"),
-        }),
+        metadata,
     };
     let _ = runtime.ingest(event)?;
     Ok(HookResponse {
@@ -362,6 +448,13 @@ fn after_mcp(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Resu
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let mut metadata = json!({});
+    insert_model(&mut metadata, value);
+    insert_meta(
+        &mut metadata,
+        "dedup_key",
+        observation_dedup_key(&session_id(value), value, &payload),
+    );
     let event = CtxEvent {
         event: EventKind::ToolOutput,
         session: session_id(value),
@@ -372,7 +465,7 @@ fn after_mcp(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Resu
         }),
         payload,
         task_context: None,
-        metadata: json!({}),
+        metadata,
     };
     let result = runtime.ingest(event)?;
     if result.replaced {
@@ -403,7 +496,11 @@ fn prompt_submit(
         tool: None,
         payload: prompt,
         task_context: None,
-        metadata: json!({ "cwd": value.get("cwd") }),
+        metadata: {
+            let mut metadata = json!({ "cwd": value.get("cwd") });
+            insert_model(&mut metadata, value);
+            metadata
+        },
     };
     let result = runtime.ingest(event)?;
     if result.delivered.is_empty() {
@@ -440,10 +537,14 @@ fn compact_hook(
         tool: None,
         payload: String::new(),
         task_context: None,
-        metadata: json!({
-            "cwd": value.get("cwd"),
-            "keep": keep,
-        }),
+        metadata: {
+            let mut metadata = json!({
+                "cwd": value.get("cwd"),
+                "keep": keep,
+            });
+            insert_model(&mut metadata, value);
+            metadata
+        },
     };
     let result = runtime.ingest(event)?;
     // PreCompact: plain text (must not start with `{`) so Claude can keep
@@ -460,9 +561,7 @@ fn session_start(
     harness: Harness,
 ) -> anyhow::Result<HookResponse> {
     let mut metadata = json!({ "cwd": value.get("cwd") });
-    if let Some(model) = hook_model(value) {
-        insert_meta(&mut metadata, "model", model);
-    }
+    insert_model(&mut metadata, value);
     let event = CtxEvent {
         event: EventKind::SessionStart,
         session: session_id(value),
@@ -488,12 +587,26 @@ fn session_start(
     })
 }
 
+/// Model behind this call. Cursor sends `model_id` (clean base id) plus a
+/// legacy `model` slug that folds in effort, e.g. `claude-opus-4-7-thinking-max`.
+/// The base id is what we attribute and price against.
 fn hook_model(value: &Value) -> Option<&str> {
-    ["model", "model_id", "modelName"]
+    ["model_id", "model", "modelName", "subagent_model"]
         .into_iter()
-        .find_map(|key| value.get(key).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
+        .find_map(|key| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+        })
+}
+
+/// Every agent hook payload carries the model, not just session start.
+fn insert_model(metadata: &mut Value, value: &Value) {
+    if let Some(model) = hook_model(value) {
+        insert_meta(metadata, "model", model);
+    }
 }
 
 fn session_end(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Result<HookResponse> {
@@ -504,7 +617,11 @@ fn session_end(runtime: &Runtime, value: &Value, harness: Harness) -> anyhow::Re
         tool: None,
         payload: String::new(),
         task_context: None,
-        metadata: json!({}),
+        metadata: {
+            let mut metadata = json!({});
+            insert_model(&mut metadata, value);
+            metadata
+        },
     };
     let _ = runtime.ingest(event)?;
     Ok(HookResponse {
@@ -720,6 +837,35 @@ mod tests {
     }
 
     #[test]
+    fn every_tool_event_attributes_its_own_model() {
+        let (_dir, runtime) = rt();
+        // Cursor omits the model on sessionStart but sends it on each tool call,
+        // and the user can switch models mid-conversation.
+        handle_hook(
+            &runtime,
+            r#"{"hook_event_name":"sessionStart","conversation_id":"switching","cursor_version":"1"}"#,
+        );
+        for model in ["grok-4.6", "claude-opus-5"] {
+            let body = serde_json::json!({
+                "hook_event_name": "postToolUse",
+                "conversation_id": "switching",
+                "cursor_version": "1",
+                "model": format!("{model}-thinking-max"),
+                "model_id": model,
+                "tool_name": "Bash",
+                "tool_response": fail_log(),
+            });
+            handle_hook(&runtime, &body.to_string());
+        }
+
+        let rows = runtime.store.dashboard_models(0).unwrap();
+        let mut ids = rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["claude-opus-5", "grok-4.6"], "{rows:?}");
+        assert!(rows.iter().all(|row| row.totals.avoided > 0), "{rows:?}");
+    }
+
+    #[test]
     fn a_later_session_start_can_fill_a_missing_model() {
         let (_dir, runtime) = rt();
         handle_hook(
@@ -890,5 +1036,117 @@ mod tests {
         assert!(resp.stdout.contains("fn thing_0"), "{}", resp.stdout);
         assert!(!resp.stdout.contains("x + 12"), "{}", resp.stdout);
         assert!(resp.stdout.contains("ctx://"), "{}", resp.stdout);
+    }
+
+    #[test]
+    fn disabled_harness_passes_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CtxPaths::from_root(dir.path().to_path_buf());
+        let mut cfg = crate::config::Config::default();
+        cfg.disabled_harnesses = vec!["cursor".into()];
+        cfg.save(&paths).unwrap();
+        let store = Store::open(paths).unwrap();
+        let runtime = Runtime::open(store);
+        for (event_name, extra) in [
+            ("preToolUse", json!({"cursor_version":"1"})),
+            ("postToolUse", json!({"cursor_version":"1","tool_name":"Bash","tool_response":"ok"})),
+            ("beforeReadFile", json!({"cursor_version":"1","file_path":"a.rs","content":"fn x(){1}"})),
+            ("beforeShellExecution", json!({"cursor_version":"1"})),
+            ("afterShellExecution", json!({"cursor_version":"1","output":"ok"})),
+            ("sessionStart", json!({"cursor_version":"1"})),
+            ("afterAgentResponse", json!({"cursor_version":"1"})),
+        ] {
+            let mut body = extra;
+            body["hook_event_name"] = json!(event_name);
+            body["conversation_id"] = json!("off");
+            let resp = handle_hook(&runtime, &body.to_string());
+            assert!(!resp.deny, "{event_name}: {resp:?}");
+            if matches!(event_name, "preToolUse" | "beforeReadFile" | "beforeShellExecution") {
+                assert!(resp.stdout.contains("permission"), "{event_name}: {}", resp.stdout);
+                assert!(resp.stdout.contains("allow"), "{event_name}: {}", resp.stdout);
+            }
+        }
+        assert!(runtime.store.observations_for_session("off").unwrap().is_empty());
+    }
+
+    #[test]
+    fn claude_disabled_pretool_returns_hook_specific_allow() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CtxPaths::from_root(dir.path().to_path_buf());
+        let mut cfg = crate::config::Config::default();
+        cfg.disabled_harnesses = vec!["claude-code".into()];
+        cfg.save(&paths).unwrap();
+        let runtime = Runtime::open(Store::open(paths).unwrap());
+        let resp = handle_hook(
+            &runtime,
+            r#"{"hook_event_name":"PreToolUse","session_id":"s","transcript_path":"/tmp/t","tool_name":"Bash"}"#,
+        );
+        assert!(resp.stdout.contains("hookSpecificOutput"), "{}", resp.stdout);
+        assert!(resp.stdout.contains("allow") || resp.stdout.contains("permissionDecision"), "{}", resp.stdout);
+        assert!(!resp.deny);
+    }
+
+    #[test]
+    fn same_event_from_two_hook_levels_counts_once() {
+        let (_dir, runtime) = rt();
+        let payload = fail_log();
+        let body = serde_json::json!({
+            "hook_event_name": "postToolUse",
+            "conversation_id": "dup-levels",
+            "cursor_version": "1",
+            "generation_id": "gen-1",
+            "tool_name": "Bash",
+            "tool_response": payload,
+        });
+        handle_hook(&runtime, &body.to_string());
+        handle_hook(&runtime, &body.to_string());
+        let obs = runtime.store.observations_for_session("dup-levels").unwrap();
+        let counted: Vec<_> = obs.iter().filter(|o| o.avoided_tokens > 0).collect();
+        assert_eq!(counted.len(), 1, "{obs:?}");
+    }
+
+    #[test]
+    fn same_output_from_two_hooks_counts_once() {
+        let (_dir, runtime) = rt();
+        let payload = fail_log();
+        let post = serde_json::json!({
+            "hook_event_name": "postToolUse",
+            "conversation_id": "dup-events",
+            "cursor_version": "1",
+            "generation_id": "gen-shell",
+            "tool_name": "Bash",
+            "tool_response": payload,
+        });
+        let after = serde_json::json!({
+            "hook_event_name": "afterShellExecution",
+            "conversation_id": "dup-events",
+            "cursor_version": "1",
+            "generation_id": "gen-shell",
+            "command": "cargo test",
+            "output": payload,
+        });
+        handle_hook(&runtime, &post.to_string());
+        handle_hook(&runtime, &after.to_string());
+        let obs = runtime.store.observations_for_session("dup-events").unwrap();
+        let counted: Vec<_> = obs.iter().filter(|o| o.raw_tokens > 80).collect();
+        assert_eq!(counted.len(), 1, "{obs:?}");
+    }
+
+    #[test]
+    fn same_payload_without_generation_id_counts_once() {
+        let (_dir, runtime) = rt();
+        let payload = fail_log();
+        let body = serde_json::json!({
+            "hook_event_name": "postToolUse",
+            "conversation_id": "dup-hash",
+            "cursor_version": "1",
+            "tool_name": "Bash",
+            "tool_response": payload,
+        });
+        handle_hook(&runtime, &body.to_string());
+        handle_hook(&runtime, &body.to_string());
+        let obs = runtime.store.observations_for_session("dup-hash").unwrap();
+        let counted: Vec<_> = obs.iter().filter(|o| o.raw_tokens > 80).collect();
+        assert_eq!(counted.len(), 1, "{obs:?}");
     }
 }

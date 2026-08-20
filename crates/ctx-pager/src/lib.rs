@@ -593,6 +593,7 @@ mod tests {
             referenced,
             source_path: source_path.map(str::to_string),
             accessed_at: 0,
+            model: String::new(),
         }
     }
 

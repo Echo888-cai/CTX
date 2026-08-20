@@ -4,12 +4,25 @@ pub struct DuplicateGuard;
 
 impl DuplicateGuard {
     pub fn render(uri: &str, count: i64, kind: &str, tool_name: Option<&str>) -> String {
+        Self::render_near(uri, count, kind, tool_name, None)
+    }
+
+    pub fn render_near(
+        uri: &str,
+        count: i64,
+        kind: &str,
+        tool_name: Option<&str>,
+        hamming: Option<u32>,
+    ) -> String {
         let who = match tool_name {
             Some(name) if !name.is_empty() && name != kind => format!("{name} ({kind})"),
             Some(name) if !name.is_empty() => name.to_string(),
             _ => kind.to_string(),
         };
-        format!("dup {who} ×{count}  {uri}")
+        match hamming {
+            Some(n) => format!("dup {who} ×{count}  {uri}  近似（差异 {n}）"),
+            None => format!("dup {who} ×{count}  {uri}"),
+        }
     }
 }
 

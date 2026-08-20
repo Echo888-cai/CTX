@@ -6,6 +6,7 @@
 
 mod ansi;
 mod budget;
+mod cdc;
 mod compact;
 mod cow;
 mod diff;
@@ -25,9 +26,10 @@ mod symbols;
 mod tokens;
 
 pub use budget::{
-    cap as token_budget, cap_for, cap_hint, from_parts as budget_from_parts, lock_fill, BudgetHint,
-    BudgetStrategy,
+    cap as token_budget, cap_for, cap_hint, count_signal_lines, from_parts as budget_from_parts,
+    lock_fill, BudgetHint, BudgetStrategy, MIN_GAIN_TOKENS,
 };
+pub use cdc::{cdc_working_set, chunk_text, Chunk};
 pub use compact::{
     compact_block, diagnostic_preview, diagnostic_ranked, is_diagnostic_line, map_path_token,
     strip_backtraces,
@@ -46,4 +48,4 @@ pub use shell::{reduce_shell, ShellGuard};
 pub use symbols::{
     collect_symbol_spans, slice_span, symbol_at_line, symbol_label, symbol_name, SymbolSpan,
 };
-pub use tokens::estimate_tokens;
+pub use tokens::{estimate_tokens, estimate_tokens_for, sniff_token_kind, TokenKind};

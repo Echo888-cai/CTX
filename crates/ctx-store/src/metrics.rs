@@ -27,13 +27,14 @@ impl Store {
                 "SELECT
                     COALESCE(SUM(o.raw_tokens), 0),
                     COALESCE(SUM(o.delivered_tokens), 0),
-                    COALESCE(SUM(o.avoided_tokens), 0)
+                    COALESCE(SUM(o.avoided_tokens), 0),
+                    COALESCE(SUM(o.refetched_tokens), 0)
                  FROM observations o
-                 JOIN sessions s ON s.id = o.session_id
+                 LEFT JOIN sessions s ON s.id = o.session_id
                  WHERE o.created_at >= ?1
                    AND CASE WHEN ?2 = '__unknown__'
-                            THEN s.model = ''
-                            ELSE s.model = ?2
+                            THEN COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''
+                            ELSE COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ?2
                        END",
                 params![since, model],
                 map_totals,
@@ -43,7 +44,8 @@ impl Store {
                 "SELECT
                     COALESCE(SUM(raw_tokens), 0),
                     COALESCE(SUM(delivered_tokens), 0),
-                    COALESCE(SUM(avoided_tokens), 0)
+                    COALESCE(SUM(avoided_tokens), 0),
+                    COALESCE(SUM(refetched_tokens), 0)
                  FROM observations WHERE created_at >= ?1",
                 params![since],
                 map_totals,
@@ -55,16 +57,17 @@ impl Store {
     pub fn dashboard_models(&self, since: i64) -> Result<Vec<ModelRow>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(
-            "SELECT CASE WHEN s.model = '' THEN '__unknown__' ELSE s.model END,
+            "SELECT COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '__unknown__'),
                     COUNT(DISTINCT o.session_id),
                     COALESCE(SUM(o.raw_tokens), 0),
                     COALESCE(SUM(o.delivered_tokens), 0),
                     COALESCE(SUM(o.avoided_tokens), 0),
+                    COALESCE(SUM(o.refetched_tokens), 0),
                     GROUP_CONCAT(DISTINCT s.harness)
              FROM observations o
-             JOIN sessions s ON s.id = o.session_id
+             LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1
-             GROUP BY CASE WHEN s.model = '' THEN '__unknown__' ELSE s.model END
+             GROUP BY 1
              ORDER BY SUM(o.avoided_tokens) DESC",
         )?;
         let rows = stmt.query_map(params![since], |r| {
@@ -75,9 +78,10 @@ impl Store {
                     raw: r.get::<_, i64>(2)? as u64,
                     delivered: r.get::<_, i64>(3)? as u64,
                     avoided: r.get::<_, i64>(4)? as u64,
+                    refetched: r.get::<_, i64>(5).unwrap_or(0) as u64,
                 },
                 source_harnesses: r
-                    .get::<_, String>(5)?
+                    .get::<_, String>(6)?
                     .split(',')
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned)
@@ -101,11 +105,11 @@ impl Store {
                     COALESCE(SUM(o.raw_tokens), 0),
                     COALESCE(SUM(o.delivered_tokens), 0)
              FROM observations o
-             JOIN sessions s ON s.id = o.session_id
+             LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1
                AND CASE WHEN ?4 = '__unknown__'
-                        THEN s.model = ''
-                        ELSE s.model = ?4
+                        THEN COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''
+                        ELSE COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ?4
                    END
              GROUP BY 1
              ORDER BY 1"
@@ -133,6 +137,59 @@ impl Store {
         }
         Ok(points)
     }
+
+    pub fn dashboard_by_harness(
+        &self,
+        since: i64,
+        model: Option<&str>,
+    ) -> Result<Vec<(String, TokenTotals)>> {
+        let conn = self.reader();
+        let sql = if model.is_some() {
+            "SELECT COALESCE(s.harness, 'unknown'),
+                    COALESCE(SUM(o.raw_tokens), 0),
+                    COALESCE(SUM(o.delivered_tokens), 0),
+                    COALESCE(SUM(o.avoided_tokens), 0),
+                    COALESCE(SUM(o.refetched_tokens), 0)
+             FROM observations o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.created_at >= ?1
+               AND CASE WHEN ?2 = '__unknown__'
+                        THEN COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''
+                        ELSE COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ?2
+                   END
+             GROUP BY 1"
+        } else {
+            "SELECT COALESCE(s.harness, 'unknown'),
+                    COALESCE(SUM(o.raw_tokens), 0),
+                    COALESCE(SUM(o.delivered_tokens), 0),
+                    COALESCE(SUM(o.avoided_tokens), 0),
+                    COALESCE(SUM(o.refetched_tokens), 0)
+             FROM observations o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.created_at >= ?1
+             GROUP BY 1"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, String>(0)?,
+                TokenTotals {
+                    raw: r.get::<_, i64>(1)? as u64,
+                    delivered: r.get::<_, i64>(2)? as u64,
+                    avoided: r.get::<_, i64>(3)? as u64,
+                    refetched: r.get::<_, i64>(4).unwrap_or(0) as u64,
+                },
+            ))
+        };
+        let rows = if let Some(model) = model {
+            stmt.query_map(params![since, model], map)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map(params![since], map)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
 }
 
 fn map_totals(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenTotals> {
@@ -140,6 +197,7 @@ fn map_totals(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenTotals> {
         raw: r.get::<_, i64>(0)? as u64,
         delivered: r.get::<_, i64>(1)? as u64,
         avoided: r.get::<_, i64>(2)? as u64,
+        refetched: r.get::<_, i64>(3).unwrap_or(0) as u64,
     })
 }
 
@@ -160,6 +218,7 @@ mod tests {
         store
             .insert_observation(NewObservation {
                 session_id: session.into(),
+                model: String::new(),
                 event_type: "tool_output".into(),
                 tool_type: Some("shell".into()),
                 tool_name: Some("Bash".into()),
@@ -172,6 +231,8 @@ mod tests {
                 reasons: serde_json::json!([]),
                 referenced: false,
                 source_path: None,
+                dedup_key: String::new(),
+                shadow: false,
             })
             .unwrap();
     }

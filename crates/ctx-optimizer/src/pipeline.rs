@@ -15,17 +15,21 @@ pub struct OptimizeOutput {
     /// If true, caller should skip further optimizers.
     pub terminal: bool,
     pub duplicate_of: Option<String>,
+    /// Diagnostic/error lines still present after reduction.
+    pub signal_kept: u32,
 }
 
 impl OptimizeOutput {
     pub fn reduced(optimizer: &'static str, text: String) -> Self {
         let delivered_tokens = crate::tokens::estimate_tokens(&text);
+        let signal_kept = crate::budget::count_signal_lines(&text);
         Self {
             text,
             optimizer,
             delivered_tokens,
             terminal: false,
             duplicate_of: None,
+            signal_kept,
         }
     }
 
@@ -35,6 +39,14 @@ impl OptimizeOutput {
         out.terminal = true;
         out
     }
+
+    pub fn score(&self, signal_weight: u32) -> i64 {
+        self.signal_kept as i64 * signal_weight as i64 - self.delivered_tokens as i64
+    }
+}
+
+pub fn prefers(a: &OptimizeOutput, b: &OptimizeOutput, signal_weight: u32) -> bool {
+    a.score(signal_weight) > b.score(signal_weight)
 }
 
 pub trait Optimizer: Send + Sync {
@@ -118,22 +130,24 @@ impl Pipeline {
     }
 
     pub fn run(&self, input: &OptimizeInput<'_>) -> Option<OptimizeOutput> {
+        let weight = input
+            .metadata
+            .get("signal_weight")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(40) as u32;
         let mut best: Option<OptimizeOutput> = None;
         for opt in &self.inner {
             if let Some(out) = opt.apply(input) {
                 if out.terminal {
                     return Some(out);
                 }
-                let better = best
-                    .as_ref()
-                    .map(|b| out.delivered_tokens < b.delivered_tokens)
-                    .unwrap_or(true);
+                let better = best.as_ref().map(|b| prefers(&out, b, weight)).unwrap_or(true);
                 if better {
                     best = Some(out);
                 }
             }
         }
-        best.filter(|out| out.delivered_tokens + 40 < input.raw_tokens)
+        best.filter(|out| out.delivered_tokens + crate::budget::MIN_GAIN_TOKENS < input.raw_tokens)
     }
 }
 
@@ -180,5 +194,26 @@ mod tests {
             path: "custom.wasm".into(),
         }]);
         assert_eq!(plugins_only.guard_count(), 5, "plugins append to v0");
+    }
+
+    #[test]
+    fn pipeline_prefers_keeping_panic_over_shorter_cut() {
+        let keep = OptimizeOutput {
+            text: "panicked at src/lib.rs:1\nerror: boom\n".into(),
+            optimizer: "shell",
+            delivered_tokens: 120,
+            terminal: false,
+            duplicate_of: None,
+            signal_kept: 2,
+        };
+        let cut = OptimizeOutput {
+            text: "ok\n".into(),
+            optimizer: "generic",
+            delivered_tokens: 50,
+            terminal: false,
+            duplicate_of: None,
+            signal_kept: 0,
+        };
+        assert!(prefers(&keep, &cut, 40), "keep={} cut={}", keep.score(40), cut.score(40));
     }
 }

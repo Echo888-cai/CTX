@@ -23,6 +23,23 @@ pub struct Config {
     pub dashboard_autostart: bool,
     #[serde(default)]
     pub auto_snapshot: bool,
+    /// When a session has no model id, look up this catalog / prices.json id.
+    /// Empty falls back to Cursor Grok 4.6 list price.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_billing_model: String,
+    /// Harness ids (`Harness::as_str()`) the user turned off. Empty = all on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_harnesses: Vec<String>,
+    /// Count savings but deliver the original payload unchanged.
+    #[serde(default)]
+    pub shadow_mode: bool,
+    /// Shadow only these harness ids; empty + `shadow_mode` = global.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadow_harnesses: Vec<String>,
+    /// SimHash Hamming radius for near-duplicate tool output. 0 disables.
+    /// Not exposed in settings — keep the default unless a test overrides it.
+    #[serde(default = "default_hamming")]
+    pub near_duplicate_hamming: u32,
 }
 
 fn default_true() -> bool {
@@ -37,6 +54,9 @@ fn default_large_file() -> u32 {
 fn default_strategy() -> String {
     "balanced".into()
 }
+fn default_hamming() -> u32 {
+    3
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -49,6 +69,11 @@ impl Default for Config {
             optimizers: Vec::new(),
             dashboard_autostart: false,
             auto_snapshot: false,
+            default_billing_model: String::new(),
+            disabled_harnesses: Vec::new(),
+            shadow_mode: false,
+            shadow_harnesses: Vec::new(),
+            near_duplicate_hamming: default_hamming(),
         }
     }
 }
@@ -66,5 +91,22 @@ impl Config {
         paths.ensure().ok();
         let json = serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec());
         std::fs::write(paths.config_path(), json)
+    }
+
+    pub fn is_harness_disabled(&self, harness: ctx_protocol::Harness) -> bool {
+        let id = harness.as_str();
+        self.disabled_harnesses.iter().any(|item| {
+            item == id || (id == "claude-code" && item == "claude")
+        })
+    }
+
+    pub fn is_shadow(&self, harness: ctx_protocol::Harness) -> bool {
+        if self.shadow_mode && self.shadow_harnesses.is_empty() {
+            return true;
+        }
+        let id = harness.as_str();
+        self.shadow_harnesses
+            .iter()
+            .any(|item| item == id || (id == "claude-code" && item == "claude"))
     }
 }

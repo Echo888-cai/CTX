@@ -9,17 +9,28 @@ use anyhow::Context;
 use ctx_core::CtxPaths;
 use serde_json::{json, Value};
 
+use crate::harnesses;
 use crate::setup;
 use crate::status;
+use crate::uninstall;
 
 const PAGE: &str = include_str!("app.html");
 const WORDMARK: &[u8] = include_bytes!("assets/ctx-wordmark.png");
-#[cfg(target_os = "macos")]
+const ARROW_RIGHT: &[u8] = include_bytes!("assets/arrow-right.png");
 const SERVICE_LABEL: &str = "ai.ctx.dashboard";
 
-pub fn run(port: u16, open: bool, install: bool, uninstall: bool) -> anyhow::Result<()> {
+pub fn run(
+    port: u16,
+    open: bool,
+    install: bool,
+    uninstall: bool,
+    install_app: bool,
+) -> anyhow::Result<()> {
     if uninstall {
         return uninstall_service();
+    }
+    if install_app {
+        return install_menubar_app();
     }
     if install {
         return install_service(port);
@@ -150,7 +161,10 @@ fn dispatch_with(
             "text/html; charset=utf-8",
             PAGE.as_bytes().to_vec(),
         ),
-        ("GET", "/assets/ctx-wordmark.png") => ("200 OK", "image/png", WORDMARK.to_vec()),
+        ("GET", "/assets/ctx-wordmark.png") | ("GET", "/assets/chuntingxue-wordmark.png") => {
+            ("200 OK", "image/png", WORDMARK.to_vec())
+        }
+        ("GET", "/assets/arrow-right.png") => ("200 OK", "image/png", ARROW_RIGHT.to_vec()),
         ("GET", "/api/status") => {
             let range = match query_param(query, "range") {
                 "" => "7d",
@@ -160,8 +174,19 @@ fn dispatch_with(
                 "" => "all",
                 m => m,
             };
-            json_ok(dashboard_payload(range, model))
+            let from = query_param(query, "from").parse().ok();
+            let to = query_param(query, "to").parse().ok();
+            json_ok(dashboard_payload(range, model, from, to))
         }
+        ("GET", "/api/harnesses") => json_ok(harnesses::payload()),
+        ("POST", "/api/harness") => json_ok(harnesses::set_enabled(
+            query_param(query, "id"),
+            query_param(query, "enabled") != "0",
+        )),
+        ("GET", "/api/doctor") => json_ok(doctor_payload()),
+        ("GET", "/api/health") => json_ok(health_payload()),
+        ("POST", "/api/prices/refresh") => json_ok(prices_refresh()),
+        ("POST", "/api/uninstall") => json_ok(uninstall_target(query_param(query, "target"))),
         ("POST", "/api/setup") => json_ok(setup_target(query_param(query, "target"))),
         ("POST", "/api/pause") => json_ok(set_enabled(false)),
         ("POST", "/api/resume") => json_ok(set_enabled(true)),
@@ -184,7 +209,15 @@ fn config_get() -> serde_json::Value {
     match ctx_core::CtxPaths::default_home() {
         Ok(paths) => {
             let cfg = ctx_core::Config::load(&paths);
-            serde_json::to_value(&cfg).unwrap_or(json!({"ok": false}))
+            let mut value = serde_json::to_value(&cfg).unwrap_or(json!({"ok": false}));
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("ok".into(), json!(true));
+                obj.insert("price_catalog".into(), ctx_core::catalog_json());
+                let (entries, fetched_at) = ctx_core::official_price_meta(&paths);
+                obj.insert("price_entries".into(), json!(entries));
+                obj.insert("price_fetched_at".into(), json!(fetched_at));
+            }
+            value
         }
         Err(err) => json!({"ok": false, "error": err.to_string()}),
     }
@@ -223,6 +256,24 @@ fn config_set(body: &str) -> serde_json::Value {
     }
     if let Some(b) = v.get("auto_snapshot").and_then(|x| x.as_bool()) {
         cfg.auto_snapshot = b;
+    }
+    if let Some(s) = v.get("default_billing_model").and_then(|x| x.as_str()) {
+        cfg.default_billing_model = s.trim().to_string();
+    }
+    if let Some(b) = v.get("shadow_mode").and_then(|x| x.as_bool()) {
+        cfg.shadow_mode = b;
+    }
+    if let Some(arr) = v.get("disabled_harnesses").and_then(|x| x.as_array()) {
+        cfg.disabled_harnesses = arr
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect();
+    }
+    if let Some(arr) = v.get("shadow_harnesses").and_then(|x| x.as_array()) {
+        cfg.shadow_harnesses = arr
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect();
     }
     match cfg.save(&paths) {
         Ok(()) => json!({"ok": true}),
@@ -287,9 +338,70 @@ fn json_ok(value: Value) -> (&'static str, &'static str, Vec<u8>) {
     ("200 OK", "application/json", value.to_string().into_bytes())
 }
 
-fn dashboard_payload(range: &str, model: &str) -> Value {
-    match status::dashboard(range, model) {
-        Ok(v) => v,
+fn dashboard_payload(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -> Value {
+    match status::dashboard(range, model, from, to) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("harness_summary".into(), harnesses::summary_json());
+                obj.insert("tools".into(), harnesses::payload()["harnesses"].clone());
+            }
+            v
+        }
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn doctor_payload() -> Value {
+    match crate::doctor::collect() {
+        Ok(report) => json!({
+            "ok": true,
+            "checks": report.checks.iter().map(|c| json!({
+                "ok": c.ok,
+                "name": c.name,
+                "detail": c.detail,
+            })).collect::<Vec<_>>()
+        }),
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
+}
+
+fn health_payload() -> Value {
+    let (p50, p95, _) = ctx_core::hook_latency_ms();
+    let (enabled, shadow, intercepts) = match ctx_core::Runtime::open_default() {
+        Ok(rt) => {
+            let intercepts = rt
+                .store
+                .observation_count_since(ctx_core::start_of_today())
+                .unwrap_or(0);
+            (rt.config.enabled, rt.config.shadow_mode, intercepts)
+        }
+        Err(_) => (true, false, 0),
+    };
+    json!({
+        "ok": true,
+        "enabled": enabled,
+        "shadow": shadow,
+        "hook_p50_ms": (p50 * 10.0).round() / 10.0,
+        "hook_p95_ms": (p95 * 10.0).round() / 10.0,
+        "intercepts_today": intercepts,
+    })
+}
+
+fn prices_refresh() -> Value {
+    let Ok(paths) = ctx_core::CtxPaths::default_home() else {
+        return json!({"ok": false, "error": "no home"});
+    };
+    let _ = ctx_core::refresh_official_prices_now(&paths);
+    let (entries, fetched_at) = ctx_core::official_price_meta(&paths);
+    json!({"ok": true, "entries": entries, "fetched_at": fetched_at})
+}
+
+fn uninstall_target(target: &str) -> Value {
+    if target.is_empty() {
+        return json!({"ok": false, "error": "missing target"});
+    }
+    match uninstall::strip_target(target) {
+        Ok(()) => json!({"ok": true, "target": target}),
         Err(err) => json!({"ok": false, "error": err.to_string()}),
     }
 }
@@ -297,6 +409,7 @@ fn dashboard_payload(range: &str, model: &str) -> Value {
 fn setup_target(target: &str) -> Value {
     let result = match target {
         "claude" | "claude-code" => setup::setup("claude"),
+        "claude-desktop" => setup::setup("claude-desktop"),
         "cursor" => setup::setup("cursor"),
         "windsurf" => setup::setup("windsurf"),
         "vscode" | "code" => setup::setup("vscode"),
@@ -351,6 +464,102 @@ fn open_browser(url: &str) {
     } else {
         Command::new("xdg-open").arg(url).status()
     };
+}
+
+fn install_menubar_app() -> anyhow::Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        anyhow::bail!("menu bar app is macOS only. Use: ctx app");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let dest = dirs::home_dir()
+            .context("home directory")?
+            .join("Applications/CTX.app");
+        if let Some(built) = find_menubar_bundle() {
+            fs::create_dir_all(dest.parent().unwrap())?;
+            if dest.exists() {
+                fs::remove_dir_all(&dest)?;
+            }
+            copy_dir(&built, &dest)?;
+            let _ = Command::new("open").arg(&dest).status();
+            println!("CTX menu bar  {}", dest.display());
+            println!("Look for ↓% next to the clock. Click it for today's avoided tokens.");
+            return Ok(());
+        }
+        let script = find_menubar_build().context(
+            "menu bar sources not found. From the repo: bash apps/macos/build.sh --install",
+        )?;
+        let status = Command::new("bash")
+            .arg(&script)
+            .arg("--install")
+            .status()
+            .context("build macOS app")?;
+        if !status.success() {
+            anyhow::bail!("apps/macos/build.sh failed (needs Xcode CLT + swiftc)");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn find_menubar_build() -> Option<std::path::PathBuf> {
+    menubar_roots()
+        .into_iter()
+        .map(|root| root.join("build.sh"))
+        .find(|p| p.is_file())
+}
+
+#[cfg(target_os = "macos")]
+fn find_menubar_bundle() -> Option<std::path::PathBuf> {
+    menubar_roots()
+        .into_iter()
+        .map(|root| root.join("dist/CTX.app"))
+        .find(|p| p.join("Contents/MacOS/CTX").is_file())
+}
+
+#[cfg(target_os = "macos")]
+fn menubar_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join("apps/macos"));
+        let mut cur = cwd;
+        for _ in 0..6 {
+            roots.push(cur.join("apps/macos"));
+            if !cur.pop() {
+                break;
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cur = exe;
+        for _ in 0..8 {
+            if !cur.pop() {
+                break;
+            }
+            roots.push(cur.join("apps/macos"));
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".ctx/src/apps/macos"));
+    }
+    roots
+}
+
+#[cfg(target_os = "macos")]
+fn copy_dir(src: &std::path::Path, dest: &std::path::Path) -> anyhow::Result<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dest.join(entry.file_name());
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else if ty.is_file() {
+            fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
 }
 
 fn ctx_bin() -> anyhow::Result<std::path::PathBuf> {
@@ -502,17 +711,30 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_shows_hero_copy() {
-        assert!(PAGE.contains("让上下文，精准抵达"));
-        assert!(PAGE.contains("/api/status"));
-        assert!(PAGE.contains("上下文趋势"));
-        assert!(PAGE.contains("优化器拆分"));
-        assert!(PAGE.contains("创建快照"));
-        assert!(PAGE.contains("实时日志"));
-        assert!(PAGE.contains("/api/config"));
-        assert!(PAGE.contains("view-settings"));
-        assert!(PAGE.contains("cfg-autostart"));
-        assert!(PAGE.contains("HOT / WARM / COLD"));
+    fn dashboard_renders_the_approved_brand_and_savings_language() {
+        let (status, content_type, body) = dispatch("GET", "/", "");
+        assert_eq!(status, "200 OK");
+        assert!(content_type.contains("text/html"));
+        let page = String::from_utf8(body).expect("dashboard html is utf-8");
+
+        assert!(page.contains("「让重要的，自然抵达。」"));
+        assert!(page.contains("已节省"));
+        assert!(page.contains("/api/status"));
+        assert!(page.contains("上下文趋势"));
+        assert!(page.contains("range-trigger"));
+        assert!(page.contains("当天"));
+        assert!(page.contains("按模型"));
+        assert!(page.contains("settings-btn"));
+        assert!(page.contains("已接入"));
+        assert!(page.contains("/assets/ctx-wordmark.png"));
+        assert!(!page.contains("春庭雪"));
+        assert!(!page.contains("春雪留痕"));
+        assert!(!page.contains("API 等价"));
+        assert!(!page.contains("按公开输入价估算"));
+        assert!(!page.contains("已避免"));
+        assert!(!page.contains("自动优化中"));
+        assert!(!page.contains(">高级<"));
+        assert!(!page.contains("显示未安装"));
     }
 
     #[test]
@@ -528,11 +750,47 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_serves_the_brand_asset() {
+    fn dashboard_serves_the_ctx_brand_asset() {
         let (status, content_type, body) = dispatch("GET", "/assets/ctx-wordmark.png", "");
         assert_eq!(status, "200 OK");
         assert_eq!(content_type, "image/png");
         assert!(body.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(body.len() > 1_000, "brand asset is unexpectedly small");
+
+        let (status, content_type, body) = dispatch("GET", "/assets/arrow-right.png", "");
+        assert_eq!(status, "200 OK");
+        assert_eq!(content_type, "image/png");
+        assert!(body.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn settings_apis_are_json_ok() {
+        for path in ["/api/harnesses", "/api/doctor", "/api/health"] {
+            let (status, content_type, body) = dispatch("GET", path, "");
+            assert_eq!(status, "200 OK", "{path}");
+            assert!(content_type.contains("json"), "{path}");
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(v["ok"], true, "{path}: {v}");
+        }
+        let (status, _, body) = dispatch("GET", "/api/harnesses", "");
+        assert_eq!(status, "200 OK");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let ids: Vec<_> = v["harnesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|h| h["id"].as_str())
+            .collect();
+        assert!(ids.contains(&"cursor"), "{ids:?}");
+        assert!(ids.contains(&"claude-code"), "{ids:?}");
+        assert!(ids.contains(&"codex"), "{ids:?}");
+        assert!(!ids.contains(&"claude-desktop"), "{ids:?}");
+        assert!(!ids.contains(&"windsurf"), "{ids:?}");
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert!(v["harnesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["capability"] == "retrieval" && h["id"] == "codex"));
     }
 }

@@ -15,6 +15,7 @@ pub fn init() -> anyhow::Result<()> {
     Config::default().save(&paths)?;
 
     let claude = detect_claude();
+    let claude_desktop = detect_claude_desktop();
     let cursor = detect_cursor();
     let windsurf = detect_windsurf();
     let vscode = detect_vscode();
@@ -27,6 +28,7 @@ pub fn init() -> anyhow::Result<()> {
     println!();
     println!("Detected");
     println!("  {}  Claude Code", mark(claude));
+    println!("  {}  Claude Desktop", mark(claude_desktop));
     println!("  {}  Cursor", mark(cursor));
     println!("  {}  Windsurf", mark(windsurf));
     println!("  {}  VS Code / Copilot", mark(vscode));
@@ -39,6 +41,10 @@ pub fn init() -> anyhow::Result<()> {
     if claude {
         setup_claude()?;
         println!("  ✓  Claude Code  hooks + mcp");
+    }
+    if claude_desktop {
+        setup_claude_desktop()?;
+        println!("  ✓  Claude Desktop  mcp");
     }
     if cursor {
         setup_cursor()?;
@@ -69,7 +75,7 @@ pub fn init() -> anyhow::Result<()> {
         setup_codex()?;
         println!("  ✓  Codex        mcp");
     }
-    if !claude && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
+    if !claude && !claude_desktop && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
         println!("  ·  none — later: ctx setup claude, cursor, windsurf, vscode, continue, jetbrains, aider, or codex");
     }
 
@@ -86,6 +92,11 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
         "claude" | "claude-code" => {
             setup_claude()?;
             println!("Claude Code hooks installed. ctx doctor to verify.");
+            Ok(())
+        }
+        "claude-desktop" => {
+            setup_claude_desktop()?;
+            println!("Claude Desktop MCP installed. Restart Claude to pick up ctx.");
             Ok(())
         }
         "cursor" => {
@@ -129,6 +140,7 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
         }
         "all" => {
             setup_claude()?;
+            let _ = setup_claude_desktop();
             setup_cursor()?;
             setup_windsurf()?;
             let _ = setup_vscode();
@@ -143,7 +155,7 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
         "wizard" => wizard(),
         other => {
             anyhow::bail!(
-                "unknown target {other:?} (use claude, cursor, windsurf, vscode, continue, jetbrains, aider, copilot, codex, all, or wizard)"
+                "unknown target {other:?} (use claude, claude-desktop, cursor, windsurf, vscode, continue, jetbrains, aider, copilot, codex, all, or wizard)"
             )
         }
     }
@@ -216,7 +228,7 @@ pub fn wizard() -> anyhow::Result<()> {
     }
     cfg.save(&paths)?;
     if cfg.dashboard_autostart {
-        let _ = crate::app::run(8741, false, true, false);
+        let _ = crate::app::run(8741, false, true, false, false);
     }
 
     println!();
@@ -272,7 +284,7 @@ fn mark(ok: bool) -> &'static str {
     }
 }
 
-fn detect_claude() -> bool {
+pub(crate) fn detect_claude() -> bool {
     dirs::home_dir()
         .map(|h| h.join(".claude").exists())
         .unwrap_or(false)
@@ -283,21 +295,27 @@ fn detect_claude() -> bool {
             .unwrap_or(false)
 }
 
-fn detect_cursor() -> bool {
+pub(crate) fn detect_claude_desktop() -> bool {
+    dirs::home_dir()
+        .map(|h| claude_desktop_dir(&h).is_dir())
+        .unwrap_or(false)
+}
+
+pub(crate) fn detect_cursor() -> bool {
     Path::new("/Applications/Cursor.app").exists()
         || dirs::home_dir()
             .map(|h| h.join(".cursor").exists())
             .unwrap_or(false)
 }
 
-fn detect_windsurf() -> bool {
+pub(crate) fn detect_windsurf() -> bool {
     Path::new("/Applications/Windsurf.app").exists()
         || dirs::home_dir()
             .map(|h| h.join(".codeium").join("windsurf").exists())
             .unwrap_or(false)
 }
 
-fn detect_vscode() -> bool {
+pub(crate) fn detect_vscode() -> bool {
     dirs::home_dir()
         .map(|h| {
             h.join("Library")
@@ -310,13 +328,13 @@ fn detect_vscode() -> bool {
         .unwrap_or(false)
 }
 
-fn detect_continue() -> bool {
+pub(crate) fn detect_continue() -> bool {
     dirs::home_dir()
         .map(|h| h.join(".continue").is_dir())
         .unwrap_or(false)
 }
 
-fn detect_jetbrains() -> bool {
+pub(crate) fn detect_jetbrains() -> bool {
     dirs::home_dir()
         .map(|h| {
             h.join("Library")
@@ -330,11 +348,11 @@ fn detect_jetbrains() -> bool {
         .unwrap_or(false)
 }
 
-fn detect_aider() -> bool {
+pub(crate) fn detect_aider() -> bool {
     which("aider")
 }
 
-fn detect_codex() -> bool {
+pub(crate) fn detect_codex() -> bool {
     dirs::home_dir()
         .map(|h| h.join(".codex").is_dir())
         .unwrap_or(false)
@@ -395,6 +413,38 @@ fn setup_claude() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn claude_desktop_dir(home: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library")
+            .join("Application Support")
+            .join("Claude")
+    } else if cfg!(target_os = "windows") {
+        home.join("AppData")
+            .join("Roaming")
+            .join("Claude")
+    } else {
+        home.join(".config").join("Claude")
+    }
+}
+
+pub(crate) fn claude_desktop_config_path(home: &Path) -> PathBuf {
+    claude_desktop_dir(home).join("claude_desktop_config.json")
+}
+
+fn setup_claude_desktop() -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let path = claude_desktop_config_path(&home);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    let mut root = read_json_object(&path)?;
+    merge_mcp(root.as_object_mut().unwrap(), &ctx_bin())
+        .with_context(|| format!("merge mcpServers in {}", path.display()))?;
+    write_json_atomic(&path, &root)?;
+    println!("Installed Claude Desktop MCP → {}", path.display());
+    Ok(())
+}
+
 fn setup_cursor() -> anyhow::Result<()> {
     let home = dirs::home_dir().context("home directory")?;
     let hooks_path = home.join(".cursor").join("hooks.json");
@@ -411,6 +461,23 @@ fn setup_cursor() -> anyhow::Result<()> {
         .with_context(|| format!("merge mcpServers in {}", mcp_path.display()))?;
     write_json_atomic(&mcp_path, &mcp)?;
     println!("Installed Cursor hooks → {}", hooks_path.display());
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join(".git").exists() || cwd.join(".cursor").exists() {
+            setup_cursor_project(&cwd)?;
+        }
+    }
+    Ok(())
+}
+
+fn setup_cursor_project(cwd: &std::path::Path) -> anyhow::Result<()> {
+    let dir = cwd.join(".cursor");
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let hooks_path = dir.join("hooks.json");
+    let mut hooks = read_json_object(&hooks_path)?;
+    merge_cursor_hooks(&mut hooks, &hook_cmd())
+        .with_context(|| format!("merge hooks in {}", hooks_path.display()))?;
+    write_json_atomic(&hooks_path, &hooks)?;
+    println!("Installed project Cursor hooks → {}", hooks_path.display());
     Ok(())
 }
 
@@ -717,8 +784,14 @@ pub fn merge_cursor_hooks(root: &mut Value, cmd: &str) -> anyhow::Result<()> {
         "sessionEnd",
         "preToolUse",
         "postToolUse",
+        "postToolUseFailure",
         "beforeReadFile",
         "beforeSubmitPrompt",
+        "afterShellExecution",
+        "afterMCPExecution",
+        "preCompact",
+        "subagentStart",
+        "afterAgentResponse",
     ] {
         let existing = map.entry(event).or_insert_with(|| json!([]));
         if let Some(arr) = existing.as_array_mut() {
@@ -768,7 +841,43 @@ mod tests {
         let pre = hooks["hooks"]["preToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 1, "{pre:?}");
         assert!(hooks["hooks"]["beforeSubmitPrompt"].as_array().is_some());
+        assert!(hooks["hooks"]["afterShellExecution"].as_array().is_some());
+        assert!(hooks["hooks"]["afterMCPExecution"].as_array().is_some());
         assert!(is_ctx_hook_command(pre[0]["command"].as_str().unwrap()));
+    }
+
+    #[test]
+    fn merge_cursor_registers_shell_and_mcp_hooks() {
+        let cmd = hook_cmd_for("/opt/ctx");
+        let mut hooks = json!({"version": 1, "hooks": {}});
+        merge_cursor_hooks(&mut hooks, &cmd).unwrap();
+        for event in [
+            "afterShellExecution",
+            "afterMCPExecution",
+            "preCompact",
+            "subagentStart",
+            "afterAgentResponse",
+            "postToolUseFailure",
+        ] {
+            let arr = hooks["hooks"][event]
+                .as_array()
+                .unwrap_or_else(|| panic!("missing {event}"));
+            assert_eq!(arr.len(), 1, "{event}: {arr:?}");
+        }
+    }
+
+    #[test]
+    fn merge_cursor_project_hooks_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let cursor = dir.path().join(".cursor");
+        std::fs::create_dir_all(&cursor).unwrap();
+        setup_cursor_project(dir.path()).unwrap();
+        let hooks: Value = serde_json::from_slice(
+            &std::fs::read(cursor.join("hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(hooks["hooks"]["preToolUse"].as_array().is_some());
+        assert!(hooks["hooks"]["afterShellExecution"].as_array().is_some());
     }
 
     #[test]

@@ -34,6 +34,11 @@ pub struct BudgetHint {
     pub signal_lines: u32,
     pub fetched_before: bool,
     pub strategy: BudgetStrategy,
+    /// Multiplier learned from refetch rate, clamped to [0.75, 1.4].
+    pub tune: f64,
+    /// Estimated context window fill, 0–100.
+    pub occupancy_pct: u32,
+    pub compacting: bool,
 }
 
 impl Default for BudgetHint {
@@ -44,6 +49,9 @@ impl Default for BudgetHint {
             signal_lines: 0,
             fetched_before: false,
             strategy: BudgetStrategy::Balanced,
+            tune: 1.0,
+            occupancy_pct: 0,
+            compacting: false,
         }
     }
 }
@@ -59,12 +67,27 @@ pub fn from_parts(kind: &str, metadata: &serde_json::Value, payload: &str) -> Bu
         .and_then(|v| v.as_str())
         .map(BudgetStrategy::parse)
         .unwrap_or_default();
+    let tune = metadata
+        .get("budget_tune")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0);
+    let occupancy_pct = metadata
+        .get("occupancy_pct")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let compacting = metadata
+        .get("compacting")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     BudgetHint {
         kind: kind.to_string(),
         exit_code,
         signal_lines: count_signal_lines(payload),
         fetched_before,
         strategy,
+        tune,
+        occupancy_pct,
+        compacting,
     }
 }
 
@@ -77,6 +100,9 @@ pub fn cap_hint(kind: &str, metadata: &serde_json::Value, payload: &str, raw_tok
 pub fn cap(raw_tokens: u32) -> u32 {
     cap_for(raw_tokens, &BudgetHint::default())
 }
+
+/// Skip a reducer unless it saves at least this many estimated tokens.
+pub const MIN_GAIN_TOKENS: u32 = 40;
 
 pub fn cap_for(raw_tokens: u32, hint: &BudgetHint) -> u32 {
     let fifteenth = ((raw_tokens as u64 * 15) / 100) as u32;
@@ -93,6 +119,20 @@ pub fn cap_for(raw_tokens: u32, hint: &BudgetHint) -> u32 {
         BudgetStrategy::Balanced => cap,
         BudgetStrategy::Conservative => ((cap as f64) * 1.35).round() as u32,
     };
+    let tune = hint.tune.clamp(0.75, 1.4);
+    cap = ((cap as f64) * tune).round() as u32;
+    let occ = if hint.compacting {
+        0.8
+    } else if hint.occupancy_pct == 0 {
+        1.0
+    } else if hint.occupancy_pct < 40 {
+        1.15
+    } else if hint.occupancy_pct > 70 {
+        0.8
+    } else {
+        1.0
+    };
+    cap = ((cap as f64) * occ).round() as u32;
     let (lo, hi) = bounds(hint);
     cap.clamp(lo, hi)
 }
@@ -198,6 +238,9 @@ mod tests {
                 signal_lines: 8,
                 fetched_before: false,
                 strategy: BudgetStrategy::Balanced,
+                tune: 1.0,
+                occupancy_pct: 0,
+                compacting: false,
             },
         );
         let pass = cap_for(
@@ -208,6 +251,9 @@ mod tests {
                 signal_lines: 0,
                 fetched_before: false,
                 strategy: BudgetStrategy::Balanced,
+                tune: 1.0,
+                occupancy_pct: 0,
+                compacting: false,
             },
         );
         assert!(fail > pass, "fail={fail} pass={pass}");
@@ -225,6 +271,9 @@ mod tests {
                 signal_lines: 2,
                 fetched_before: false,
                 strategy: BudgetStrategy::Balanced,
+                tune: 1.0,
+                occupancy_pct: 0,
+                compacting: false,
             },
         );
         let fetched = cap_for(
@@ -235,8 +284,53 @@ mod tests {
                 signal_lines: 2,
                 fetched_before: true,
                 strategy: BudgetStrategy::Balanced,
+                tune: 1.0,
+                occupancy_pct: 0,
+                compacting: false,
             },
         );
         assert!(fetched > base, "fetched={fetched} base={base}");
+    }
+
+    #[test]
+    fn budget_tightens_as_context_fills() {
+        let empty = cap_for(
+            2_000,
+            &BudgetHint {
+                kind: "shell".into(),
+                occupancy_pct: 10,
+                ..BudgetHint::default()
+            },
+        );
+        let full = cap_for(
+            2_000,
+            &BudgetHint {
+                kind: "shell".into(),
+                occupancy_pct: 80,
+                ..BudgetHint::default()
+            },
+        );
+        assert!(full < empty, "full={full} empty={empty}");
+    }
+
+    #[test]
+    fn tune_widens_and_tightens_cap() {
+        let base = cap_for(2_000, &BudgetHint::default());
+        let wide = cap_for(
+            2_000,
+            &BudgetHint {
+                tune: 1.4,
+                ..BudgetHint::default()
+            },
+        );
+        let tight = cap_for(
+            2_000,
+            &BudgetHint {
+                tune: 0.75,
+                ..BudgetHint::default()
+            },
+        );
+        assert!(wide >= base, "wide={wide} base={base}");
+        assert!(tight <= base, "tight={tight} base={base}");
     }
 }

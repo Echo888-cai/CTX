@@ -3,6 +3,45 @@
 /// Mixed code and logs sit around 3.8 characters per token. This is labeled
 /// "estimated" everywhere it is shown to users.
 pub fn estimate_tokens(text: &str) -> u32 {
+    estimate_tokens_for(TokenKind::Shell, text)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
+    Code,
+    Shell,
+    Json,
+    Prose,
+    Cjk,
+    Binary,
+}
+
+pub fn sniff_token_kind(tool_kind: &str, text: &str) -> TokenKind {
+    let sample = if text.len() > 4000 { &text[..4000] } else { text };
+    let non_ascii = sample.chars().filter(|c| !c.is_ascii()).count();
+    if !sample.is_empty() && non_ascii * 100 / sample.chars().count().max(1) >= 20 {
+        return TokenKind::Cjk;
+    }
+    let trimmed = sample.trim_start();
+    if (trimmed.starts_with('{') || trimmed.starts_with('[')) && sample.contains(':') {
+        return TokenKind::Json;
+    }
+    let b64ish = sample
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/' || *b == b'=')
+        .count();
+    if sample.len() > 80 && b64ish * 100 / sample.len() > 92 {
+        return TokenKind::Binary;
+    }
+    match tool_kind {
+        "file" => TokenKind::Code,
+        "mcp" => TokenKind::Json,
+        "shell" => TokenKind::Shell,
+        _ => TokenKind::Prose,
+    }
+}
+
+pub fn estimate_tokens_for(kind: TokenKind, text: &str) -> u32 {
     if text.is_empty() {
         return 0;
     }
@@ -19,8 +58,16 @@ pub fn estimate_tokens(text: &str) -> u32 {
             }
         }
     }
+    let (ascii_div, other_div) = match kind {
+        TokenKind::Code => (3.3, 1.1),
+        TokenKind::Shell => (3.9, 1.1),
+        TokenKind::Json => (2.9, 1.1),
+        TokenKind::Prose => (4.2, 1.1),
+        TokenKind::Cjk => (3.8, 0.9),
+        TokenKind::Binary => (3.0, 1.1),
+    };
     let words = word_count(text) as f64;
-    let by_chars = ascii as f64 / 3.8 + other as f64 / 1.1;
+    let by_chars = ascii as f64 / ascii_div + other as f64 / other_div;
     let by_words = words * 1.3;
     by_chars.max(by_words).round().max(1.0) as u32
 }
@@ -64,7 +111,7 @@ mod tests {
         let s = "error: boom\nleft: 401\nright: 200\n";
         let chars = s.chars().count() as f64;
         let words = s.split_whitespace().count() as f64;
-        let expected = (chars / 3.8).max(words * 1.3).round().max(1.0) as u32;
+        let expected = (chars / 3.9).max(words * 1.3).round().max(1.0) as u32;
         assert_eq!(estimate_tokens(s), expected);
     }
 }

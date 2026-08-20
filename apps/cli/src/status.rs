@@ -1,4 +1,7 @@
-use ctx_core::{fmt_compact, start_of_today, Config, CtxPaths, Runtime, Snapshot, Store};
+use ctx_core::{
+    catalog_json, fmt_compact, start_of_today, Config, CtxPaths, PriceBook, Runtime, Snapshot,
+    Store,
+};
 use serde_json::{json, Value};
 
 pub fn run(json: bool) -> anyhow::Result<()> {
@@ -16,6 +19,9 @@ pub fn payload() -> anyhow::Result<Value> {
     let rt = Runtime::open_default()?;
     let snap = Snapshot::capture(&rt.store)?;
     let recent = notable_rows(&rt.store);
+    let book = load_price_book(&rt.config);
+    let models = priced_model_rows(&rt.store, start_of_today(), &book)?;
+    let money = price_summary(&models);
     Ok(json!({
         "ok": true,
         "enabled": rt.config.enabled,
@@ -31,31 +37,48 @@ pub fn payload() -> anyhow::Result<Value> {
                 "reduction_pct": t.reduction_pct(),
             })
         }).collect::<Vec<_>>(),
+        "models": models,
+        "avoided_usd": money.avoided_usd,
+        "avoided_usd_estimated": money.estimated,
+        "priced_avoided": money.priced_avoided,
+        "priced_models": money.priced_models,
+        "unpriced_models": money.unpriced_models,
+        "default_billing_model": rt.config.default_billing_model,
+        "composition": composition_rows(&rt.store, start_of_today(), snap.today),
         "reasons": snap.reasons_today,
         "recent": recent,
         "highlight": recent.first().cloned().unwrap_or(json!(null)),
         "pages": snap.pages,
         "store_bytes": snap.store_bytes,
+        "tools": crate::harnesses::payload()["harnesses"].clone(),
     }))
 }
 
-/// Local dashboard. `range` is 24h | 7d | 30d. `model` is `all`, a model id,
-/// or `__unknown__` for sessions whose harness did not report a model.
-pub fn dashboard(range: &str, model: &str) -> anyhow::Result<Value> {
+/// Local dashboard. `range` is today | 1d | 24h | 7d | 14d | 30d | custom.
+/// `from`/`to` are unix seconds for a custom window. `model` is `all`, a model
+/// id, or `__unknown__` for sessions whose harness did not report a model.
+pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -> anyhow::Result<Value> {
     let rt = Runtime::open_default()?;
     let now = now_unix();
     let tz = 8 * 3600;
-    let (span, bucket, count) = match range {
-        "24h" => (24 * 3600, 3600, 24usize),
-        "30d" => (30 * 86400, 86400, 30usize),
-        _ => (7 * 86400, 86400, 7usize),
+    let (range, since, until, mut bucket) = resolve_window(range, from, to, now, tz);
+    let (start_bucket, _last_bucket, count) = {
+        let mut first = align(since, bucket, tz);
+        let mut last = align(until.max(since + 1), bucket, tz);
+        while bucket < 7 * 86400 && ((last - first) / bucket) + 1 > 48 {
+            bucket *= 2;
+            first = align(since, bucket, tz);
+            last = align(until, bucket, tz);
+        }
+        let n = (((last - first) / bucket) as usize).saturating_add(1).max(1);
+        (first, last, n)
     };
-    let since = now.saturating_sub(span);
     let selected_model = match model {
         "" | "all" => None,
         other => Some(other),
     };
     let totals = rt.store.dashboard_totals(since, selected_model)?;
+    let book = load_price_book(&rt.config);
     let mut models = rt
         .store
         .dashboard_models(since)?
@@ -74,16 +97,21 @@ pub fn dashboard(range: &str, model: &str) -> anyhow::Result<Value> {
                 .iter()
                 .map(|harness| harness_label(harness))
                 .collect::<Vec<_>>();
-            json!({
-                "id": m.id,
-                "name": model_label(&m.id),
-                "sessions": m.sessions,
-                "raw": m.totals.raw,
-                "delivered": m.totals.delivered,
-                "avoided": m.totals.avoided,
-                "reduction_pct": m.totals.reduction_pct(),
-                "source_harnesses": source_harnesses,
-            })
+            with_price(
+                &book,
+                json!({
+                    "id": m.id,
+                    "name": model_label(&m.id),
+                    "sessions": m.sessions,
+                    "raw": m.totals.raw,
+                    "delivered": m.totals.delivered,
+                    "avoided": m.totals.avoided,
+                    "refetched": m.totals.refetched,
+                    "net_avoided": m.totals.net_avoided(),
+                    "reduction_pct": m.totals.reduction_pct(),
+                    "source_harnesses": source_harnesses,
+                }),
+            )
         })
         .collect::<Vec<_>>();
     let model_options = all_models
@@ -112,11 +140,10 @@ pub fn dashboard(range: &str, model: &str) -> anyhow::Result<Value> {
     if let Some(id) = selected_model {
         models.retain(|m| m["id"] == id);
     }
+    let money = price_summary(&models);
     let sparse = rt
         .store
         .dashboard_series(since, bucket, tz, selected_model)?;
-    let last_bucket = align(now, bucket, tz);
-    let start_bucket = last_bucket - (count as i64 - 1) * bucket;
     let series = (0..count)
         .map(|i| {
             let t = start_bucket + (i as i64) * bucket;
@@ -130,31 +157,98 @@ pub fn dashboard(range: &str, model: &str) -> anyhow::Result<Value> {
             })
         })
         .collect::<Vec<_>>();
-    let from = series
-        .first()
-        .and_then(|p| p["label"].as_str())
-        .unwrap_or("");
-    let to = series
-        .last()
-        .and_then(|p| p["label"].as_str())
-        .unwrap_or("");
+    let by_harness = rt
+        .store
+        .dashboard_by_harness(since, selected_model)?
+        .into_iter()
+        .map(|(id, t)| {
+            json!({
+                "id": id,
+                "name": crate::harnesses::display_name(&id),
+                "capability": crate::harnesses::capability(&id),
+                "raw": t.raw,
+                "delivered": t.delivered,
+                "avoided": t.avoided,
+                "refetched": t.refetched,
+                "net_avoided": t.net_avoided(),
+                "reduction_pct": t.reduction_pct(),
+            })
+        })
+        .collect::<Vec<_>>();
     Ok(json!({
         "ok": true,
         "enabled": rt.config.enabled,
         "version": env!("CARGO_PKG_VERSION"),
-        "range": if matches!(range, "24h" | "30d") { range } else { "7d" },
+        "range": range,
+        "from": since,
+        "to": until,
         "model": selected_model.unwrap_or("all"),
-        "date_label": format!("{from} — {to}"),
+        "date_label": date_label(&series, since, until, tz),
         "totals": totals_json(totals),
         "series": series,
         "models": models,
         "model_options": model_options,
+        "avoided_usd": money.avoided_usd,
+        "avoided_usd_estimated": money.estimated,
+        "priced_avoided": money.priced_avoided,
+        "priced_models": money.priced_models,
+        "unpriced_models": money.unpriced_models,
+        "default_billing_model": rt.config.default_billing_model,
+        "composition": composition_rows(&rt.store, since, totals),
+        "by_harness": by_harness
+            .into_iter()
+            .filter(|row| {
+                let id = row["id"].as_str().unwrap_or("");
+                matches!(id, "cursor" | "cursor-cli" | "claude" | "claude-code" | "codex")
+            })
+            .collect::<Vec<_>>(),
+        "tools": crate::harnesses::payload()["harnesses"].clone(),
+        "price_catalog": catalog_json(),
         "pages": rt.store.page_count().unwrap_or(0),
         "store_bytes": rt.store.compressed_bytes().unwrap_or(0),
         "reasons": optimizer_rows(&rt.store, since),
         "recent": feed_rows(&rt.store),
         "snapshots": snapshot_rows(&rt.store),
     }))
+}
+
+/// One bar: what actually reached the model, then why the rest did not.
+/// Segments sum to raw so the bar is readable as the whole context.
+fn composition_rows(store: &Store, since: i64, totals: ctx_core::TokenTotals) -> Vec<Value> {
+    let mut rows = vec![json!({
+        "key": "delivered",
+        "label": "有效输入",
+        "tokens": totals.delivered,
+        "kept": true,
+    })];
+    let reasons = store.reason_breakdown_since(since).unwrap_or_default();
+    let tallied: u64 = reasons.iter().map(|(_, n)| *n).sum();
+    let mut sorted = reasons;
+    sorted.sort_by_key(|(_, tokens)| std::cmp::Reverse(*tokens));
+    for (label, tokens) in sorted {
+        if tokens == 0 {
+            continue;
+        }
+        rows.push(json!({
+            "key": label,
+            "label": reason_short(&label),
+            "tokens": tokens,
+            "kept": false,
+        }));
+    }
+    // Reason tallies can lag the token totals; keep the bar honest instead of
+    // silently rescaling the named segments.
+    if let Some(rest) = totals.avoided.checked_sub(tallied) {
+        if rest > 0 && totals.avoided > 0 {
+            rows.push(json!({
+                "key": "other",
+                "label": "其他优化",
+                "tokens": rest,
+                "kept": false,
+            }));
+        }
+    }
+    rows
 }
 
 fn optimizer_rows(store: &Store, since: i64) -> Vec<Value> {
@@ -222,7 +316,8 @@ fn harness_label(id: &str) -> String {
 
 fn model_label(id: &str) -> String {
     match id {
-        "__unknown__" | "" => "未识别模型".into(),
+        "__unknown__" | "" => "未上报模型".into(),
+        "default" | "auto" => "Auto（自动选择）".into(),
         "gpt-5" => "GPT-5".into(),
         "claude-sonnet-4-6" => "Claude Sonnet 4.6".into(),
         "claude-opus-4-1" => "Claude Opus 4.1".into(),
@@ -317,11 +412,181 @@ fn reason_short(key: &str) -> &'static str {
     }
 }
 
+fn load_price_book(config: &Config) -> PriceBook {
+    match CtxPaths::default_home() {
+        Ok(paths) => PriceBook::load_with_refresh(&paths, &config.default_billing_model),
+        Err(_) => PriceBook::load(
+            &CtxPaths::from_root(std::path::PathBuf::from(".")),
+            &config.default_billing_model,
+        ),
+    }
+}
+
+fn resolve_window(
+    range: &str,
+    from: Option<i64>,
+    to: Option<i64>,
+    now: i64,
+    tz: i64,
+) -> (&'static str, i64, i64, i64) {
+    let custom = from.zip(to).map(|(a, b)| {
+        let start = a.min(b);
+        let end = a.max(b).clamp(start + 60, now);
+        (start, end)
+    });
+    let (key, since, until) = match (range, custom) {
+        ("custom", Some((start, end))) => ("custom", start, end),
+        ("today", _) => ("today", start_of_local_day(now, tz), now),
+        ("1d" | "24h", _) => ("1d", now.saturating_sub(24 * 3600), now),
+        ("14d", _) => ("14d", now.saturating_sub(14 * 86400), now),
+        ("30d", _) => ("30d", now.saturating_sub(30 * 86400), now),
+        _ => ("7d", now.saturating_sub(7 * 86400), now),
+    };
+    let span = until.saturating_sub(since).max(1);
+    let bucket = if span <= 2 * 86400 {
+        3600
+    } else if span <= 45 * 86400 {
+        86400
+    } else {
+        7 * 86400
+    };
+    (key, since, until, bucket)
+}
+
+fn start_of_local_day(now: i64, tz: i64) -> i64 {
+    let local = now + tz;
+    local - local.rem_euclid(86400) - tz
+}
+
+fn date_label(series: &[Value], since: i64, until: i64, tz: i64) -> String {
+    let (_, m1, d1, h1) = civil(since + tz);
+    let (_, m2, d2, h2) = civil(until + tz);
+    let hourly = series
+        .first()
+        .and_then(|p| p["label"].as_str())
+        .map(|s| s.contains(':'))
+        .unwrap_or(false);
+    if hourly {
+        if m1 == m2 && d1 == d2 {
+            return format!("{m1}月{d1}日 {h1:02}:00 — {h2:02}:00");
+        }
+        return format!("{m1}月{d1}日 {h1:02}:00 — {m2}月{d2}日 {h2:02}:00");
+    }
+    if m1 == m2 && d1 == d2 {
+        format!("{m1}月{d1}日")
+    } else {
+        format!("{m1}月{d1}日 — {m2}月{d2}日")
+    }
+}
+
+fn priced_model_rows(store: &Store, since: i64, book: &PriceBook) -> anyhow::Result<Vec<Value>> {
+    let rows = store.dashboard_models(since)?;
+    Ok(rows
+        .into_iter()
+        .map(|m| {
+            with_price(
+                book,
+                json!({
+                    "id": m.id,
+                    "name": model_label(&m.id),
+                    "sessions": m.sessions,
+                    "raw": m.totals.raw,
+                    "delivered": m.totals.delivered,
+                    "avoided": m.totals.avoided,
+                    "refetched": m.totals.refetched,
+                    "net_avoided": m.totals.net_avoided(),
+                    "reduction_pct": m.totals.reduction_pct(),
+                    "source_harnesses": m.source_harnesses.iter().map(|h| harness_label(h)).collect::<Vec<_>>(),
+                }),
+            )
+        })
+        .collect())
+}
+
+fn with_price(book: &PriceBook, mut row: Value) -> Value {
+    let id = row["id"].as_str().unwrap_or("").to_string();
+    let avoided = row["net_avoided"]
+        .as_u64()
+        .or_else(|| row["avoided"].as_u64())
+        .unwrap_or(0);
+    match book.quote(&id) {
+        Some(quote) => {
+            row["input_usd_per_mtok"] = json!(quote.usd_per_mtok);
+            row["avoided_usd"] = json!(ctx_core::round_usd(
+                avoided as f64 / 1_000_000.0 * quote.usd_per_mtok
+            ));
+            row["price_source"] = json!(quote.source.as_str());
+            row["price_estimate"] = json!(quote.source.is_estimate());
+            row["priced_as"] = json!(quote.matched_id);
+        }
+        None => {
+            row["input_usd_per_mtok"] = Value::Null;
+            row["avoided_usd"] = Value::Null;
+            row["price_source"] = Value::Null;
+            row["price_estimate"] = json!(false);
+        }
+    }
+    row
+}
+
+struct PriceSummary {
+    avoided_usd: Value,
+    priced_avoided: u64,
+    priced_models: usize,
+    unpriced_models: usize,
+    /// Any contributing row priced through the Auto/unknown fallback.
+    estimated: bool,
+}
+
+fn price_summary(models: &[Value]) -> PriceSummary {
+    let mut quoted_usd = 0.0;
+    let mut estimated_usd = 0.0;
+    let mut priced_avoided = 0u64;
+    let mut quoted_models = 0usize;
+    let mut estimated_models = 0usize;
+    let mut unpriced_models = 0usize;
+    for model in models {
+        match model["avoided_usd"].as_f64() {
+            Some(value) => {
+                let estimate = model["price_estimate"].as_bool().unwrap_or(false);
+                if estimate {
+                    estimated_usd += value;
+                    estimated_models += 1;
+                } else {
+                    quoted_usd += value;
+                    quoted_models += 1;
+                    priced_avoided += model["net_avoided"]
+                        .as_u64()
+                        .or_else(|| model["avoided"].as_u64())
+                        .unwrap_or(0);
+                }
+            }
+            None => unpriced_models += 1,
+        }
+    }
+    let (avoided_usd, estimated) = if quoted_models > 0 {
+        (json!(ctx_core::round_usd(quoted_usd)), false)
+    } else if estimated_models > 0 {
+        (json!(ctx_core::round_usd(estimated_usd)), true)
+    } else {
+        (Value::Null, false)
+    };
+    PriceSummary {
+        avoided_usd,
+        priced_avoided,
+        priced_models: quoted_models,
+        unpriced_models,
+        estimated,
+    }
+}
+
 fn totals_json(t: ctx_core::TokenTotals) -> Value {
     json!({
         "raw": t.raw,
         "delivered": t.delivered,
         "avoided": t.avoided,
+        "refetched": t.refetched,
+        "net_avoided": t.net_avoided(),
         "reduction_pct": t.reduction_pct(),
     })
 }
@@ -444,6 +709,7 @@ mod tests {
             raw: 200,
             delivered: 50,
             avoided: 150,
+            refetched: 0,
         };
         let v = totals_json(t);
         assert_eq!(v["avoided"], 150);
@@ -462,8 +728,59 @@ mod tests {
         assert_eq!(model_label("gpt-5"), "GPT-5");
         assert_eq!(model_label("claude-sonnet-4-6"), "Claude Sonnet 4.6");
         assert_eq!(model_label("claude-opus-4-1"), "Claude Opus 4.1");
-        assert_eq!(model_label("__unknown__"), "未识别模型");
+        assert_eq!(model_label("__unknown__"), "未上报模型");
+        assert_eq!(model_label("default"), "Auto（自动选择）");
         assert_eq!(model_label("future-model-x"), "future-model-x");
+    }
+
+    #[test]
+    fn unknown_model_uses_grok_list_price() {
+        let book = PriceBook::load(
+            &CtxPaths::from_root(std::path::PathBuf::from("/tmp/ctx-no-prices")),
+            "",
+        );
+        let row = with_price(&book, json!({"id": "__unknown__", "avoided": 1_000_000u64}));
+        assert_eq!(row["avoided_usd"], 2.0);
+        assert_eq!(row["price_estimate"], true);
+        let money = price_summary(&[row]);
+        assert_eq!(money.avoided_usd, json!(2.0));
+        assert!(money.estimated);
+        assert_eq!(money.unpriced_models, 0);
+    }
+
+    #[test]
+    fn quoted_models_do_not_mix_auto_estimates_into_the_kpi() {
+        let book = PriceBook::load(
+            &CtxPaths::from_root(std::path::PathBuf::from("/tmp/ctx-no-prices")),
+            "",
+        );
+        let named = with_price(
+            &book,
+            json!({"id": "claude-sonnet-4-6", "avoided": 1_000_000u64}),
+        );
+        let auto = with_price(&book, json!({"id": "default", "avoided": 1_000_000u64}));
+        assert_eq!(named["price_estimate"], false);
+        assert_eq!(auto["price_estimate"], true);
+        let money = price_summary(&[named, auto]);
+        assert_eq!(money.avoided_usd, json!(3.0));
+        assert!(!money.estimated);
+        assert_eq!(money.priced_models, 1);
+    }
+
+    #[test]
+    fn priced_row_contributes_api_equivalent_dollars() {
+        let book = PriceBook::load(
+            &CtxPaths::from_root(std::path::PathBuf::from("/tmp/ctx-no-prices")),
+            "",
+        );
+        let row = with_price(
+            &book,
+            json!({"id": "claude-sonnet-4-6", "avoided": 1_000_000u64}),
+        );
+        assert_eq!(row["avoided_usd"], 3.0);
+        let money = price_summary(&[row]);
+        assert_eq!(money.avoided_usd, json!(3.0));
+        assert_eq!(money.priced_models, 1);
     }
 
     #[test]

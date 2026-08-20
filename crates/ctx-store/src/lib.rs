@@ -14,10 +14,12 @@ mod observe;
 mod paths;
 mod pool;
 
-pub use blob::{blake3_hex, normalize_hash};
+pub use blob::{
+    blake3_hex, hamming_distance, normalize_for_simhash, normalize_hash, simhash64, simhash_bands,
+};
 pub use cache::{decode_blob_file, prefetch_blobs, stats as cache_stats};
 pub use error::StoreError;
-pub use observe::{record_hook, record_page_fault};
+pub use observe::{hook_latency_ms, record_hook, record_page_fault};
 pub use paths::{CtxPaths, DEFAULT_HOME_ENV};
 
 use std::sync::{Arc, Mutex};
@@ -66,11 +68,14 @@ pub struct Observation {
     pub source_path: Option<String>,
     /// Last page-in time. 0 means never fetched — clock uses created_at.
     pub accessed_at: i64,
+    pub model: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct NewObservation {
     pub session_id: String,
+    /// Model that made this call. Empty when the harness did not report one.
+    pub model: String,
     pub event_type: String,
     pub tool_type: Option<String>,
     pub tool_name: Option<String>,
@@ -83,6 +88,9 @@ pub struct NewObservation {
     pub reasons: serde_json::Value,
     pub referenced: bool,
     pub source_path: Option<String>,
+    /// blake3 key that makes two hook levels / two events for one call count once.
+    pub dedup_key: String,
+    pub shadow: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +99,8 @@ pub struct FingerprintHit {
     pub uri: Option<String>,
     pub count: i64,
     pub first_seen_at: i64,
+    pub near: bool,
+    pub hamming: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +110,16 @@ pub struct FileReadRecord {
     pub last_uri: Option<String>,
     pub last_tokens: u32,
     pub regions: serde_json::Value,
+    pub chunks: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OptimizerStat {
+    pub optimizer: String,
+    pub intercepts: u64,
+    pub avoided: u64,
+    pub refetched: u64,
+    pub tune: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -331,11 +351,11 @@ impl Store {
             write_page(&tx, page)?;
         }
         tx.execute(
-            "INSERT INTO observations (
+            "INSERT OR IGNORE INTO observations (
                 session_id, event_type, tool_type, tool_name, uri, content_hash,
                 raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
-                referenced, source_path
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                referenced, source_path, model, dedup_key, shadow
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 obs.session_id,
                 obs.event_type,
@@ -350,10 +370,18 @@ impl Store {
                 obs.reasons.to_string(),
                 now_secs(),
                 if obs.referenced { 1i64 } else { 0i64 },
-                obs.source_path
+                obs.source_path,
+                obs.model,
+                obs.dedup_key,
+                if obs.shadow { 1i64 } else { 0i64 }
             ],
         )?;
-        let id = tx.last_insert_rowid();
+        let inserted = tx.changes();
+        let id = if inserted == 0 {
+            0
+        } else {
+            tx.last_insert_rowid()
+        };
         tx.commit()?;
         Ok(id)
     }
@@ -397,8 +425,10 @@ impl Store {
                 harness = excluded.harness,
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 model = CASE
-                    WHEN sessions.model = '' AND excluded.model <> '' THEN excluded.model
-                    ELSE sessions.model
+                    WHEN excluded.model = '' THEN sessions.model
+                    WHEN sessions.model IN ('', 'default', 'auto') THEN excluded.model
+                    WHEN excluded.model IN ('default', 'auto') THEN sessions.model
+                    ELSE excluded.model
                 END",
             params![id, harness, now_secs(), cwd, model.unwrap_or("")],
         )?;
@@ -469,7 +499,19 @@ impl Store {
         normalized_hash: &str,
         uri: Option<&str>,
     ) -> Result<FingerprintHit> {
+        self.remember_fingerprint_near(hash, normalized_hash, uri, 0, 0)
+    }
+
+    pub fn remember_fingerprint_near(
+        &self,
+        hash: &str,
+        normalized_hash: &str,
+        uri: Option<&str>,
+        simhash: u64,
+        max_hamming: u32,
+    ) -> Result<FingerprintHit> {
         let now = now_secs();
+        let bands = crate::blob::simhash_bands(simhash);
         let conn = self.lock();
         if let Ok(hit) = conn.query_row(
             "SELECT hash, uri, count, first_seen_at FROM fingerprints WHERE hash = ?1",
@@ -495,10 +537,26 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(e) => return Err(e.into()),
         };
+        let sim_hit = if near.is_none() && max_hamming > 0 && simhash != 0 {
+            lookup_simhash(&conn, simhash, max_hamming)?
+        } else {
+            None
+        };
         conn.execute(
-            "INSERT INTO fingerprints (hash, normalized_hash, uri, first_seen_at, last_seen_at, count)
-             VALUES (?1, ?2, ?3, ?4, ?4, 1)",
-            params![hash, normalized_hash, uri, now],
+            "INSERT INTO fingerprints (hash, normalized_hash, uri, first_seen_at, last_seen_at, count,
+                simhash, band0, band1, band2, band3)
+             VALUES (?1, ?2, ?3, ?4, ?4, 1, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                hash,
+                normalized_hash,
+                uri,
+                now,
+                simhash as i64,
+                bands[0] as i64,
+                bands[1] as i64,
+                bands[2] as i64,
+                bands[3] as i64
+            ],
         )?;
         if let Some(hit) = near {
             return Ok(FingerprintHit {
@@ -507,11 +565,21 @@ impl Store {
                 ..hit
             });
         }
+        if let Some(hit) = sim_hit {
+            return Ok(FingerprintHit {
+                count: hit.count + 1,
+                uri: hit.uri.or_else(|| uri.map(str::to_string)),
+                near: true,
+                ..hit
+            });
+        }
         Ok(FingerprintHit {
             hash: hash.to_string(),
             uri: uri.map(str::to_string),
             count: 1,
             first_seen_at: now,
+            near: false,
+            hamming: 0,
         })
     }
 
@@ -546,16 +614,18 @@ impl Store {
     pub fn get_file_read(&self, path: &str) -> Result<Option<FileReadRecord>> {
         let conn = self.reader();
         let row = conn.query_row(
-            "SELECT path, content_hash, last_uri, last_tokens, regions FROM file_reads WHERE path = ?1",
+            "SELECT path, content_hash, last_uri, last_tokens, regions, chunks FROM file_reads WHERE path = ?1",
             params![path],
             |r| {
                 let regions: String = r.get(4)?;
+                let chunks: String = r.get(5).unwrap_or_else(|_| "[]".into());
                 Ok(FileReadRecord {
                     path: r.get(0)?,
                     content_hash: r.get(1)?,
                     last_uri: r.get(2)?,
                     last_tokens: r.get::<_, u32>(3)?,
                     regions: serde_json::from_str(&regions).unwrap_or(serde_json::json!([])),
+                    chunks: serde_json::from_str(&chunks).unwrap_or(serde_json::json!([])),
                 })
             },
         );
@@ -569,21 +639,23 @@ impl Store {
     pub fn upsert_file_read(&self, rec: &FileReadRecord) -> Result<()> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO file_reads (path, content_hash, last_uri, last_tokens, regions, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO file_reads (path, content_hash, last_uri, last_tokens, regions, last_seen_at, chunks)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(path) DO UPDATE SET
                 content_hash = excluded.content_hash,
                 last_uri = excluded.last_uri,
                 last_tokens = excluded.last_tokens,
                 regions = excluded.regions,
-                last_seen_at = excluded.last_seen_at",
+                last_seen_at = excluded.last_seen_at,
+                chunks = excluded.chunks",
             params![
                 rec.path,
                 rec.content_hash,
                 rec.last_uri,
                 rec.last_tokens,
                 rec.regions.to_string(),
-                now_secs()
+                now_secs(),
+                rec.chunks.to_string()
             ],
         )?;
         Ok(())
@@ -594,7 +666,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, event_type, tool_type, tool_name, uri, content_hash,
                     raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
-                    referenced, source_path, accessed_at
+                    referenced, source_path, accessed_at, model
              FROM observations WHERE created_at >= ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(params![since_unix], map_observation)?;
@@ -607,7 +679,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, event_type, tool_type, tool_name, uri, content_hash,
                     raw_tokens, delivered_tokens, avoided_tokens, optimizer, reasons, created_at,
-                    referenced, source_path, accessed_at
+                    referenced, source_path, accessed_at, model
              FROM observations WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(params![session_id], map_observation)?;
@@ -669,6 +741,178 @@ impl Store {
     pub fn blob_count(&self) -> Result<u64> {
         let conn = self.reader();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
+    pub fn observation_exists_for_dedup(&self, dedup_key: &str) -> Result<bool> {
+        if dedup_key.is_empty() {
+            return Ok(false);
+        }
+        let conn = self.reader();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM observations WHERE dedup_key = ?1",
+            params![dedup_key],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Credit a later `ctx_fetch` against the observation that produced this URI.
+    pub fn add_refetch(&self, uri: &str, tokens: u32) -> Result<u64> {
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE observations
+             SET refetched_tokens = refetched_tokens + ?1,
+                 refetch_count = refetch_count + 1
+             WHERE id = (
+                 SELECT id FROM observations WHERE uri = ?2 ORDER BY created_at DESC LIMIT 1
+             )",
+            params![tokens as i64, uri],
+        )?;
+        let _ = conn.execute(
+            "INSERT INTO optimizer_stats (optimizer, intercepts, avoided, refetched, tune, updated_at)
+             SELECT COALESCE(optimizer, 'unknown'), 0, 0, ?1, 1.0, ?2
+             FROM observations WHERE uri = ?3 ORDER BY created_at DESC LIMIT 1
+             ON CONFLICT(optimizer) DO UPDATE SET
+                refetched = optimizer_stats.refetched + excluded.refetched,
+                updated_at = excluded.updated_at",
+            params![tokens as i64, now_secs(), uri],
+        );
+        Ok(n as u64)
+    }
+
+    pub fn add_session_tokens(&self, session: &str, delivered: u32, window: u32) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE sessions SET
+                ctx_used_tokens = ctx_used_tokens + ?1,
+                ctx_window_tokens = CASE WHEN ?2 > 0 THEN ?2 ELSE ctx_window_tokens END
+             WHERE id = ?3",
+            params![delivered as i64, window as i64, session],
+        )?;
+        Ok(())
+    }
+
+    pub fn session_is_compacting(&self, session: &str) -> Result<bool> {
+        let conn = self.reader();
+        let flag: i64 = conn
+            .query_row(
+                "SELECT COALESCE(remap, 0) FROM sessions WHERE id = ?1",
+                params![session],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        Ok(flag != 0)
+    }
+
+    pub fn latest_optimizer_tune(&self) -> Result<f64> {
+        let conn = self.reader();
+        match conn.query_row(
+            "SELECT tune FROM optimizer_stats ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        ) {
+            Ok(t) => Ok(t),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(1.0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn session_occupancy_pct(&self, session: &str) -> Result<u32> {
+        let conn = self.reader();
+        let row = conn.query_row(
+            "SELECT ctx_used_tokens, ctx_window_tokens FROM sessions WHERE id = ?1",
+            params![session],
+            |r| Ok((r.get::<_, i64>(0).unwrap_or(0), r.get::<_, i64>(1).unwrap_or(0))),
+        );
+        match row {
+            Ok((used, window)) if window > 0 => Ok(((used * 100) / window).clamp(0, 100) as u32),
+            Ok(_) => Ok(0),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn record_optimizer(&self, optimizer: &str, avoided: u32) -> Result<f64> {
+        let name = if optimizer.is_empty() {
+            "passthrough"
+        } else {
+            optimizer
+        };
+        let now = now_secs();
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO optimizer_stats (optimizer, intercepts, avoided, refetched, tune, updated_at)
+             VALUES (?1, 1, ?2, 0, 1.0, ?3)
+             ON CONFLICT(optimizer) DO UPDATE SET
+                intercepts = optimizer_stats.intercepts + 1,
+                avoided = optimizer_stats.avoided + excluded.avoided,
+                updated_at = excluded.updated_at",
+            params![name, avoided as i64, now],
+        )?;
+        let (intercepts, refetched, mut tune): (i64, i64, f64) = conn.query_row(
+            "SELECT intercepts, refetched, tune FROM optimizer_stats WHERE optimizer = ?1",
+            params![name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        if intercepts > 0 && intercepts % 50 == 0 {
+            let rate = refetched as f64 / intercepts as f64;
+            if rate > 0.20 {
+                tune = (tune + 0.05).min(1.4);
+            } else if rate < 0.05 {
+                tune = (tune - 0.05).max(0.75);
+            }
+            conn.execute(
+                "UPDATE optimizer_stats SET tune = ?1 WHERE optimizer = ?2",
+                params![tune, name],
+            )?;
+        }
+        Ok(tune)
+    }
+
+    pub fn optimizer_tune(&self, optimizer: &str) -> Result<f64> {
+        let conn = self.reader();
+        match conn.query_row(
+            "SELECT tune FROM optimizer_stats WHERE optimizer = ?1",
+            params![optimizer],
+            |r| r.get(0),
+        ) {
+            Ok(t) => Ok(t),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(1.0),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn reset_optimizer_tunes(&self) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("UPDATE optimizer_stats SET tune = 1.0", [])?;
+        Ok(())
+    }
+
+    pub fn optimizer_stats(&self) -> Result<Vec<OptimizerStat>> {
+        let conn = self.reader();
+        let mut stmt = conn.prepare(
+            "SELECT optimizer, intercepts, avoided, refetched, tune FROM optimizer_stats ORDER BY intercepts DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(OptimizerStat {
+                optimizer: r.get(0)?,
+                intercepts: r.get::<_, i64>(1)? as u64,
+                avoided: r.get::<_, i64>(2)? as u64,
+                refetched: r.get::<_, i64>(3)? as u64,
+                tune: r.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    pub fn observation_count_since(&self, since_unix: i64) -> Result<u64> {
+        let conn = self.reader();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM observations WHERE created_at >= ?1",
+            params![since_unix],
+            |r| r.get(0),
+        )?;
         Ok(n as u64)
     }
 
@@ -935,7 +1179,8 @@ impl Store {
             "SELECT
                 COALESCE(SUM(raw_tokens), 0),
                 COALESCE(SUM(delivered_tokens), 0),
-                COALESCE(SUM(avoided_tokens), 0)
+                COALESCE(SUM(avoided_tokens), 0),
+                COALESCE(SUM(refetched_tokens), 0)
              FROM observations WHERE created_at >= ?1",
             params![since_unix],
             |r| {
@@ -943,6 +1188,7 @@ impl Store {
                     raw: r.get::<_, i64>(0)? as u64,
                     delivered: r.get::<_, i64>(1)? as u64,
                     avoided: r.get::<_, i64>(2)? as u64,
+                    refetched: r.get::<_, i64>(3).unwrap_or(0) as u64,
                 })
             },
         )
@@ -955,7 +1201,8 @@ impl Store {
             "SELECT s.harness,
                     COALESCE(SUM(o.raw_tokens), 0),
                     COALESCE(SUM(o.delivered_tokens), 0),
-                    COALESCE(SUM(o.avoided_tokens), 0)
+                    COALESCE(SUM(o.avoided_tokens), 0),
+                    COALESCE(SUM(o.refetched_tokens), 0)
              FROM observations o
              JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1
@@ -968,6 +1215,7 @@ impl Store {
                     raw: r.get::<_, i64>(1)? as u64,
                     delivered: r.get::<_, i64>(2)? as u64,
                     avoided: r.get::<_, i64>(3)? as u64,
+                    refetched: r.get::<_, i64>(4).unwrap_or(0) as u64,
                 },
             ))
         })?;
@@ -1011,6 +1259,7 @@ pub struct TokenTotals {
     pub raw: u64,
     pub delivered: u64,
     pub avoided: u64,
+    pub refetched: u64,
 }
 
 impl TokenTotals {
@@ -1019,6 +1268,10 @@ impl TokenTotals {
             return 0;
         }
         ((self.avoided as f64 / self.raw as f64) * 100.0).round() as u32
+    }
+
+    pub fn net_avoided(self) -> u64 {
+        self.avoided.saturating_sub(self.refetched)
     }
 }
 
@@ -1041,6 +1294,7 @@ fn map_observation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Observation> {
         referenced: r.get::<_, i64>(13)? != 0,
         source_path: r.get(14)?,
         accessed_at: r.get::<_, i64>(15).unwrap_or(0),
+        model: r.get::<_, String>(16).unwrap_or_default(),
     })
 }
 
@@ -1050,7 +1304,49 @@ fn map_fingerprint(r: &rusqlite::Row<'_>) -> rusqlite::Result<FingerprintHit> {
         uri: r.get(1)?,
         count: r.get(2)?,
         first_seen_at: r.get(3)?,
+        near: false,
+        hamming: 0,
     })
+}
+
+fn lookup_simhash(
+    conn: &Connection,
+    simhash: u64,
+    max_hamming: u32,
+) -> Result<Option<FingerprintHit>> {
+    let bands = crate::blob::simhash_bands(simhash);
+    let mut stmt = conn.prepare(
+        "SELECT hash, uri, count, first_seen_at, simhash FROM fingerprints
+         WHERE band0 = ?1 OR band1 = ?2 OR band2 = ?3 OR band3 = ?4
+         LIMIT 32",
+    )?;
+    let rows = stmt.query_map(
+        params![bands[0] as i64, bands[1] as i64, bands[2] as i64, bands[3] as i64],
+        |r| {
+            Ok((
+                FingerprintHit {
+                    hash: r.get(0)?,
+                    uri: r.get(1)?,
+                    count: r.get(2)?,
+                    first_seen_at: r.get(3)?,
+                    near: true,
+                    hamming: 0,
+                },
+                r.get::<_, i64>(4).unwrap_or(0) as u64,
+            ))
+        },
+    )?;
+    let mut best: Option<FingerprintHit> = None;
+    for row in rows {
+        let (mut hit, other) = row?;
+        let d = crate::blob::hamming_distance(simhash, other);
+        if d <= max_hamming && best.as_ref().map(|b| d < b.hamming).unwrap_or(true) {
+            hit.hamming = d;
+            hit.near = true;
+            best = Some(hit);
+        }
+    }
+    Ok(best)
 }
 
 fn write_page(tx: &rusqlite::Transaction<'_>, page: RecordPage<'_>) -> Result<()> {
@@ -1206,6 +1502,7 @@ mod tests {
                 }),
                 NewObservation {
                     session_id: "s".into(),
+                    model: "gpt-5".into(),
                     event_type: "tool_output".into(),
                     tool_type: Some("shell".into()),
                     tool_name: Some("Bash".into()),
@@ -1218,6 +1515,8 @@ mod tests {
                     reasons: serde_json::json!([]),
                     referenced: false,
                     source_path: None,
+                    dedup_key: String::new(),
+                    shadow: false,
                 },
             )
             .unwrap();
@@ -1227,6 +1526,42 @@ mod tests {
             .prometheus_text()
             .unwrap()
             .contains("ctx_observations_total 1"));
+    }
+
+    #[test]
+    fn duplicate_dedup_key_is_ignored_and_refetch_nets_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(crate::CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let put = store.put_bytes(b"dup-payload").unwrap();
+        let uri = ctx_protocol::CtxUri::new("shell", &put.hash);
+        let obs = || NewObservation {
+            session_id: "s".into(),
+            model: String::new(),
+            event_type: "tool_output".into(),
+            tool_type: Some("shell".into()),
+            tool_name: Some("Bash".into()),
+            uri: Some(uri.page_key()),
+            content_hash: put.hash.clone(),
+            raw_tokens: 1000,
+            delivered_tokens: 0,
+            avoided_tokens: 1000,
+            optimizer: Some("shell".into()),
+            reasons: serde_json::json!([]),
+            referenced: false,
+            source_path: None,
+            dedup_key: "same-call".into(),
+            shadow: false,
+        };
+        let first = store.commit_ingest(None, None, obs()).unwrap();
+        let second = store.commit_ingest(None, None, obs()).unwrap();
+        assert!(first > 0);
+        assert_eq!(second, 0);
+        assert_eq!(store.observation_count().unwrap(), 1);
+        store.add_refetch(&uri.page_key(), 400).unwrap();
+        let totals = store.totals_since(0).unwrap();
+        assert_eq!(totals.avoided, 1000);
+        assert_eq!(totals.refetched, 400);
+        assert_eq!(totals.net_avoided(), 600);
     }
     #[test]
     fn put_get_roundtrip() {
@@ -1367,6 +1702,33 @@ mod tests {
     }
 
     #[test]
+    fn simhash_near_duplicate_is_count_two() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let a = "error: boom\nleft: 401\nright: 200\n".repeat(20);
+        let b = "error: boom\nleft: 402\nright: 200\n".repeat(20);
+        let ha = blake3_hex(a.as_bytes());
+        let hb = blake3_hex(b.as_bytes());
+        assert_ne!(ha, hb);
+        let sa = simhash64(&a);
+        let sb = simhash64(&b);
+        assert!(
+            crate::blob::hamming_distance(sa, sb) <= 3,
+            "hamming={}",
+            crate::blob::hamming_distance(sa, sb)
+        );
+        let first = store
+            .remember_fingerprint_near(&ha, &normalize_hash(&a), Some("ctx://shell/a"), sa, 3)
+            .unwrap();
+        assert_eq!(first.count, 1);
+        let second = store
+            .remember_fingerprint_near(&hb, &normalize_hash(&b), Some("ctx://shell/b"), sb, 3)
+            .unwrap();
+        assert!(second.count >= 2, "{second:?}");
+        assert!(second.near, "{second:?}");
+    }
+
+    #[test]
     fn record_page_keeps_task_and_harness() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
@@ -1455,9 +1817,28 @@ mod tests {
                     task TEXT NOT NULL DEFAULT '',
                     remap INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    tool_type TEXT,
+                    tool_name TEXT,
+                    uri TEXT,
+                    content_hash TEXT NOT NULL,
+                    raw_tokens INTEGER NOT NULL,
+                    delivered_tokens INTEGER NOT NULL,
+                    avoided_tokens INTEGER NOT NULL,
+                    optimizer TEXT,
+                    reasons TEXT NOT NULL DEFAULT '[]',
+                    created_at INTEGER NOT NULL
+                );
                 INSERT INTO meta (key, value) VALUES ('schema_version', '6');
                 INSERT INTO sessions (id, harness, started_at, cwd)
                 VALUES ('legacy-session', 'cursor', 123, '/tmp/project');
+                INSERT INTO sessions (id, harness, started_at, cwd)
+                VALUES ('named-session', 'cursor', 123, '/tmp/project');
+                INSERT INTO observations (session_id, event_type, content_hash, raw_tokens, delivered_tokens, avoided_tokens, created_at)
+                VALUES ('named-session', 'tool_output', 'h1', 100, 40, 60, 123);
                 "#,
             )
             .unwrap();
@@ -1482,6 +1863,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(model, "");
-        assert_eq!(version, "7");
+        assert_eq!(version, "10");
+
+        // v8 attributes calls per observation; legacy rows inherit the session.
+        conn.execute(
+            "UPDATE sessions SET model = 'grok-4.6' WHERE id = 'named-session'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rows = store.dashboard_models(0).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].id, "grok-4.6");
+        assert_eq!(rows[0].totals.avoided, 60);
     }
 }

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -59,6 +59,7 @@ pub fn collect() -> anyhow::Result<DoctorReport> {
             db_check(&paths),
             claude_hooks_check(home.as_deref()),
             cursor_hooks_check(home.as_deref()),
+            claude_desktop_check(home.as_deref()),
             windsurf_mcp_check(home.as_deref()),
             vscode_mcp_check(home.as_deref()),
             continue_mcp_check(home.as_deref()),
@@ -146,6 +147,38 @@ fn claude_hooks_check(home: Option<&Path>) -> Check {
             ok: false,
             name: "claude",
             detail: format!("{}  (unreadable)", settings.display()),
+        },
+    }
+}
+
+fn claude_desktop_check(home: Option<&Path>) -> Check {
+    let Some(home) = home else {
+        return Check {
+            ok: false,
+            name: "claude-desktop",
+            detail: "no home directory".into(),
+        };
+    };
+    let path = crate::setup::claude_desktop_config_path(home);
+    match read_object(&path) {
+        Ok(Some(v)) => Check {
+            ok: mcp_registered(&v),
+            name: "claude-desktop",
+            detail: if mcp_registered(&v) {
+                path.display().to_string()
+            } else {
+                format!("{}  (mcp missing)", path.display())
+            },
+        },
+        Ok(None) => Check {
+            ok: false,
+            name: "claude-desktop",
+            detail: "not installed".into(),
+        },
+        Err(_) => Check {
+            ok: false,
+            name: "claude-desktop",
+            detail: format!("{}  (unreadable)", path.display()),
         },
     }
 }
@@ -468,7 +501,7 @@ pub fn is_ctx_hook_command(s: &str) -> bool {
     s.contains("ctx hook") || s.contains("ctx' hook") || s.contains("ctx hook skipped")
 }
 
-fn first_stale_hook_bin(hooks: Option<&Value>) -> Option<String> {
+pub fn first_stale_hook_bin(hooks: Option<&Value>) -> Option<String> {
     let cmd = first_ctx_hook_command(hooks?)?;
     stale_hook_binary(&cmd)
 }
@@ -499,6 +532,36 @@ pub fn stale_hook_binary(cmd: &str) -> Option<String> {
 
 pub fn mcp_registered(root: &Value) -> bool {
     root.get("mcpServers").and_then(|s| s.get("ctx")).is_some()
+        || root.get("servers").and_then(|s| s.get("ctx")).is_some()
+}
+
+pub fn cursor_registered_levels(home: &Path) -> Vec<String> {
+    let mut levels = Vec::new();
+    let user = home.join(".cursor").join("hooks.json");
+    if hooks_file_has_ctx(&user) {
+        levels.push("user".into());
+    }
+    let project = Path::new(".cursor").join("hooks.json");
+    if hooks_file_has_ctx(&project) {
+        levels.push("project".into());
+    }
+    let system = if cfg!(target_os = "macos") {
+        PathBuf::from("/Library/Application Support/Cursor/hooks.json")
+    } else {
+        PathBuf::from("/etc/cursor/hooks.json")
+    };
+    if hooks_file_has_ctx(&system) {
+        levels.push("system".into());
+    }
+    levels
+}
+
+fn hooks_file_has_ctx(path: &Path) -> bool {
+    read_object(path)
+        .ok()
+        .flatten()
+        .map(|v| hooks_contain_ctx(v.get("hooks")))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

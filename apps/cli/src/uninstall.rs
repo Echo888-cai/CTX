@@ -20,7 +20,8 @@ pub fn run(purge: bool, yes: bool) -> anyhow::Result<()> {
     strip_continue(&home)?;
     strip_jetbrains(&home)?;
     strip_codex(&home)?;
-    if let Err(err) = app::run(8741, false, false, true) {
+    strip_claude_desktop(&home)?;
+    if let Err(err) = app::run(8741, false, false, true, false) {
         eprintln!("dashboard service: {err}");
     }
 
@@ -118,6 +119,29 @@ fn strip_mcp_file(path: &Path, label: &str) -> anyhow::Result<()> {
         println!("  ·  {label}  no CTX mcp");
     }
     Ok(())
+}
+
+fn strip_claude_desktop(home: &Path) -> anyhow::Result<()> {
+    let path = crate::setup::claude_desktop_config_path(home);
+    strip_mcp_file(&path, "Claude Desktop")
+}
+
+/// Remove CTX from a single harness. Used by the dashboard settings drawer.
+pub fn strip_target(target: &str) -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    match target {
+        "claude" | "claude-code" => strip_claude(&home),
+        "claude-desktop" => strip_claude_desktop(&home),
+        "cursor" => strip_cursor(&home),
+        "windsurf" => strip_windsurf(&home),
+        "vscode" | "code" => strip_vscode(&home),
+        "continue" => strip_continue(&home),
+        "jetbrains" | "idea" => strip_jetbrains(&home),
+        "codex" => strip_codex(&home),
+        "copilot" => strip_vscode(&home),
+        "aider" => Ok(()),
+        other => bail!("unknown target {other}"),
+    }
 }
 
 fn strip_windsurf(home: &Path) -> anyhow::Result<()> {
