@@ -5,6 +5,9 @@ mod doctor;
 mod exec;
 mod harnesses;
 mod inspect;
+mod ledger;
+mod proof;
+mod proxy;
 mod search;
 mod setup;
 mod snapshot;
@@ -45,7 +48,7 @@ enum Commands {
     Doctor,
     /// Install hooks + MCP for a harness
     Setup {
-        /// claude | cursor | windsurf | vscode | continue | jetbrains | aider | copilot | codex | all | wizard
+        /// claude | cursor | windsurf | vscode | continue | jetbrains | aider | copilot | chatgpt | all | wizard
         target: String,
         /// Interactive (or defaulted) first-run wizard
         #[arg(long)]
@@ -127,6 +130,34 @@ enum Commands {
     },
     /// Serve the CTX MCP (stdio)
     Mcp,
+    /// Intercept plane: Anthropic/OpenAI-compatible proxy
+    Serve {
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1:8742")]
+        bind: String,
+        /// Upstream base URL (e.g. https://api.anthropic.com)
+        #[arg(long)]
+        upstream: Option<String>,
+        /// Replace tool lists with the five frozen CTX tools
+        #[arg(long)]
+        capability: bool,
+        /// Canonicalize and return the request without forwarding
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Sync and show measured provider usage
+    Ledger {
+        #[arg(long)]
+        json: bool,
+        /// Parse Claude / Codex / Cursor transcripts into the ledger
+        #[arg(long)]
+        sync: bool,
+    },
+    /// Shadow vs live comparison using the ledger
+    Proof {
+        #[arg(long)]
+        json: bool,
+    },
     /// Create / list / restore store snapshots
     Snapshot {
         #[command(subcommand)]
@@ -327,6 +358,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ctx_mcp::serve(rt)?;
             Ok(())
         }
+        Some(Commands::Serve {
+            bind,
+            upstream,
+            capability,
+            dry_run,
+        }) => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(proxy::run(&bind, upstream, capability, dry_run))
+        }
+        Some(Commands::Ledger { json, sync }) => ledger::run(json, sync),
+        Some(Commands::Proof { json }) => proof::run(json),
         Some(Commands::Snapshot { action }) => match action {
             SnapshotAction::Create { note } => snapshot::create(note.as_deref()),
             SnapshotAction::List => snapshot::list(),

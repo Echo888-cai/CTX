@@ -1,6 +1,5 @@
 use serde_json::{json, Value};
 
-use ctx_optimizer::estimate_tokens;
 use ctx_protocol::{CtxEvent, EventKind, Harness, ToolKind, ToolRef};
 
 use crate::runtime::Runtime;
@@ -73,7 +72,7 @@ fn handle_hook_inner(runtime: &Runtime, value: &Value) -> anyhow::Result<HookRes
 fn hook_passthrough(event_name: &str, harness: Harness) -> HookResponse {
     let stdout = match event_name {
         "PreToolUse" | "preToolUse" => match harness {
-            Harness::ClaudeCode => json!({
+            Harness::ClaudeCode | Harness::Codex => json!({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow"
@@ -136,6 +135,17 @@ fn detect_harness(value: &Value) -> Harness {
     if value.get("cursor_version").is_some() || value.get("conversation_id").is_some() {
         return Harness::Cursor;
     }
+    // Codex Desktop/CLI: turn_id, or rollout under ~/.codex
+    if value.get("turn_id").is_some() {
+        return Harness::Codex;
+    }
+    if value
+        .get("transcript_path")
+        .and_then(|v| v.as_str())
+        .is_some_and(|p| p.contains(".codex") || p.contains("rollout"))
+    {
+        return Harness::Codex;
+    }
     if value.get("session_id").is_some() || value.get("transcript_path").is_some() {
         return Harness::ClaudeCode;
     }
@@ -152,7 +162,7 @@ fn session_id(value: &Value) -> String {
 }
 
 fn pre_tool_use(
-    runtime: &Runtime,
+    _runtime: &Runtime,
     value: &Value,
     harness: Harness,
 ) -> anyhow::Result<HookResponse> {
@@ -166,7 +176,7 @@ fn pre_tool_use(
     if kind == ToolKind::Shell {
         if let Some(updated) = rewrite_shell_command(&tool_input) {
             let body = match harness {
-                Harness::ClaudeCode => json!({
+                Harness::ClaudeCode | Harness::Codex => json!({
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "allow",
@@ -185,31 +195,8 @@ fn pre_tool_use(
         }
     }
 
-    if kind == ToolKind::File && harness == Harness::Cursor {
-        if let Some(path) = tool_input
-            .get("path")
-            .or_else(|| tool_input.get("file_path"))
-            .and_then(|v| v.as_str())
-        {
-            if let Ok(meta) = std::fs::metadata(path) {
-                let approx = (meta.len() as u32) / 3;
-                if approx > runtime.config.large_file_tokens {
-                    let msg = format!("large file {path}. ctx_read(\"{path}\", query=\"…\")");
-                    return Ok(HookResponse {
-                        stdout: json!({
-                            "permission": "deny",
-                            "agent_message": msg
-                        })
-                        .to_string(),
-                        deny: true,
-                    });
-                }
-            }
-        }
-    }
-
     let empty = match harness {
-        Harness::ClaudeCode => json!({
+        Harness::ClaudeCode | Harness::Codex => json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow"
@@ -286,7 +273,7 @@ fn post_tool_use(
     }
 
     let stdout = match harness {
-        Harness::ClaudeCode | Harness::Unknown => {
+        Harness::ClaudeCode | Harness::Codex | Harness::Unknown => {
             claude_updated_output(tool_name, value, &result.delivered)
         }
         _ => {
@@ -359,7 +346,6 @@ fn before_read_file(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let content = value.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let tokens = estimate_tokens(content);
     if !content.is_empty() {
         let mut metadata = json!({ "path": path, "cwd": value.get("cwd") });
         insert_model(&mut metadata, value);
@@ -378,16 +364,6 @@ fn before_read_file(
             metadata,
         };
         let _ = runtime.ingest(event);
-    }
-    if tokens > runtime.config.large_file_tokens && harness == Harness::Cursor {
-        return Ok(HookResponse {
-            stdout: json!({
-                "permission": "deny",
-                "user_message": format!("large file {path} → ctx_read")
-            })
-            .to_string(),
-            deny: true,
-        });
     }
     Ok(HookResponse {
         stdout: json!({ "permission": "allow" }).to_string(),
@@ -510,7 +486,7 @@ fn prompt_submit(
         });
     }
     let stdout = match harness {
-        Harness::ClaudeCode => json!({
+        Harness::ClaudeCode | Harness::Codex => json!({
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": result.delivered
@@ -530,9 +506,10 @@ fn compact_hook(
     harness: Harness,
     keep: bool,
 ) -> anyhow::Result<HookResponse> {
+    let session = session_id(value);
     let event = CtxEvent {
         event: EventKind::Compact,
-        session: session_id(value),
+        session: session.clone(),
         harness,
         tool: None,
         payload: String::new(),
@@ -547,10 +524,51 @@ fn compact_hook(
         },
     };
     let result = runtime.ingest(event)?;
-    // PreCompact: plain text (must not start with `{`) so Claude can keep
-    // the page table. hookSpecificOutput is rejected for this event.
+    let turns = runtime.store.ledger_since(0).unwrap_or_default();
+    let session_turns: Vec<_> = turns
+        .into_iter()
+        .filter(|t| t.session == session || t.session.is_empty())
+        .collect();
+    let book = ctx_telemetry::PriceBook::load(
+        runtime.store.paths(),
+        &runtime.config.default_billing_model,
+    );
+    let advice = crate::compact_advise(&session_turns, 3, &book);
+    if !keep {
+        if let Ok(Some(ep)) = runtime.store.current_epoch(&session) {
+            let _ = runtime.store.rotate_epoch(
+                &session,
+                &ep,
+                &ep.model,
+                &ep.thinking,
+                &ep.tools_hash,
+                &ep.system_hash,
+                &ep.workspace_snapshot,
+                &ep.prefix_hash,
+                advice.reason.to_string(),
+            );
+        }
+        let _ = runtime.store.push_journal(&session, "compact", advice.reason);
+        return Ok(HookResponse {
+            stdout: result.delivered,
+            deny: false,
+        });
+    }
+    let stdout = if advice.keep_cache {
+        format!(
+            "CTX CACHE GOVERNOR: KEEP PREFIX ({})\nDo not drop L0/L1. Hit rate {:.0}%.\n\n{}",
+            advice.reason,
+            advice.hit_rate * 100.0,
+            result.delivered
+        )
+    } else {
+        format!(
+            "CTX CACHE GOVERNOR: NEW EPOCH ({})\nCache is dead or a new epoch is cheaper.\n\n{}",
+            advice.reason, result.delivered
+        )
+    };
     Ok(HookResponse {
-        stdout: result.delivered,
+        stdout,
         deny: false,
     })
 }
@@ -573,7 +591,7 @@ fn session_start(
     };
     let result = runtime.ingest(event)?;
     let stdout = match harness {
-        Harness::ClaudeCode => json!({
+        Harness::ClaudeCode | Harness::Codex => json!({
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
                 "additionalContext": result.delivered
@@ -786,6 +804,7 @@ mod tests {
             r#"{"hook_event_name":"SessionStart","session_id":"s1","transcript_path":"/tmp/t"}"#,
         );
         assert!(resp.stdout.contains("ctx_fetch"), "{}", resp.stdout);
+        assert!(resp.stdout.contains("Epoch"), "{}", resp.stdout);
         assert!(
             !resp.stdout.contains("No context was lost"),
             "{}",
@@ -971,6 +990,7 @@ mod tests {
             resp.stdout
         );
         assert!(resp.stdout.contains("ctx://"), "{}", resp.stdout);
+        assert!(resp.stdout.contains("CTX CACHE GOVERNOR"), "{}", resp.stdout);
         assert!(resp.stdout.contains("ctx_fetch"), "{}", resp.stdout);
         assert!(
             !resp.stdout.contains("hookSpecificOutput"),
@@ -1148,5 +1168,40 @@ mod tests {
         let obs = runtime.store.observations_for_session("dup-hash").unwrap();
         let counted: Vec<_> = obs.iter().filter(|o| o.raw_tokens > 80).collect();
         assert_eq!(counted.len(), 1, "{obs:?}");
+    }
+
+    #[test]
+    fn cursor_never_denies_a_large_file_read() {
+        let (_dir, runtime) = rt();
+        let body = serde_json::json!({
+            "hook_event_name": "beforeReadFile",
+            "conversation_id": "big-read",
+            "cursor_version": "1",
+            "file_path": "src/huge.rs",
+            "content": "fn x() {}\n".repeat(400),
+        });
+        let resp = handle_hook(&runtime, &body.to_string());
+        assert!(!resp.deny, "{resp:?}");
+        assert!(resp.stdout.contains("allow"), "{}", resp.stdout);
+        assert!(!resp.stdout.contains("deny"), "{}", resp.stdout);
+    }
+
+    #[test]
+    fn cursor_never_denies_a_large_file_tool() {
+        let (_dir, runtime) = rt();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.rs");
+        std::fs::write(&path, "fn x() {}\n".repeat(400)).unwrap();
+        let body = serde_json::json!({
+            "hook_event_name": "preToolUse",
+            "conversation_id": "big-tool",
+            "cursor_version": "1",
+            "tool_name": "Read",
+            "tool_input": { "path": path.display().to_string() },
+        });
+        let resp = handle_hook(&runtime, &body.to_string());
+        assert!(!resp.deny, "{resp:?}");
+        assert!(resp.stdout.contains("allow"), "{}", resp.stdout);
+        assert!(!resp.stdout.contains("deny"), "{}", resp.stdout);
     }
 }

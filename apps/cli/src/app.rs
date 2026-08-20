@@ -723,7 +723,8 @@ mod tests {
         assert!(page.contains("上下文趋势"));
         assert!(page.contains("range-trigger"));
         assert!(page.contains("当天"));
-        assert!(page.contains("按模型"));
+        assert!(!page.contains("按模型"));
+        assert!(!page.contains("最近命中"));
         assert!(page.contains("settings-btn"));
         assert!(page.contains("已接入"));
         assert!(page.contains("/assets/ctx-wordmark.png"));
@@ -798,8 +799,10 @@ mod tests {
             .iter()
             .find(|h| h["id"] == "codex")
             .expect("codex row");
-        assert_eq!(codex["capability"], "retrieval");
+        assert_eq!(codex["name"], "ChatGPT");
+        assert_eq!(codex["capability"], "auto");
         assert_eq!(codex["form"], "desktop+cli");
         assert_eq!(codex["form_label"], "Desktop / CLI");
+        assert_eq!(codex["integration"], "hooks");
     }
 }

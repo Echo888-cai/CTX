@@ -12,4 +12,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("home directory not found")]
     NoHome,
+    #[error(
+        "CTX home is not writable: {path}. Set CTX_HOME to a writable directory (do not silently use ./.ctx)"
+    )]
+    HomeNotWritable { path: String },
 }

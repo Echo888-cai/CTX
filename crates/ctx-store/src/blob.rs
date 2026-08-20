@@ -59,6 +59,30 @@ pub fn normalize_for_simhash(text: &str) -> String {
     out
 }
 
+/// Consecutive digit runs. Status codes, assertion values, counts.
+pub fn digit_runs(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            out.push(&text[start..i]);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+pub fn digit_runs_differ(a: &str, b: &str) -> bool {
+    digit_runs(a) != digit_runs(b)
+}
+
 /// 64-bit SimHash of 3-gram shingles. Skip payloads over 2MB (caller).
 pub fn simhash64(text: &str) -> u64 {
     let norm = normalize_for_simhash(text);
@@ -139,5 +163,13 @@ mod tests {
         let ha = simhash64(a);
         let hb = simhash64(b);
         assert!(hamming_distance(ha, hb) <= 3, "d={}", hamming_distance(ha, hb));
+    }
+
+    #[test]
+    fn digit_runs_catch_status_codes() {
+        let a = "error: boom\nleft: 401\nright: 200\n";
+        let b = "error: boom\nleft: 402\nright: 200\n";
+        assert!(digit_runs_differ(a, b));
+        assert!(!digit_runs_differ(a, a));
     }
 }

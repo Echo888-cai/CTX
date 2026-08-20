@@ -5,6 +5,7 @@
 //! refresh, prices.json, or default_billing_model).
 
 mod prices;
+mod tiers;
 
 use ctx_pager::{start_of_today, start_of_week};
 use ctx_store::{Store, TokenTotals};
@@ -14,6 +15,7 @@ pub use prices::{
     catalog_json, is_auto_id, official_price_meta, refresh_official_prices,
     refresh_official_prices_now, round_usd, CatalogEntry, PriceBook, PriceQuote, PriceSource,
 };
+pub use tiers::TierRates;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {

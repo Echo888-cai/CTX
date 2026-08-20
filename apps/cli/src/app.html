@@ -6,19 +6,31 @@
 <title>CTX</title>
 <style>
   :root {
-    --paper: #ffffff; --ink: #111311; --muted: #6e736f; --quiet: #969b97;
-    --line: #e4e7e4; --grid: #e9ece9; --wash: #f8f9f8; --green: #078b45; --raw: #8e969f;
+    --paper: #fbfcfb; --ink: #111311; --muted: #6e736f; --quiet: #969b97;
+    --line: #e6e9e6; --grid: #e9ece9; --wash: #f3f5f3; --green: #078b45; --raw: #8e969f;
     --kept-50: #eff5fd; --kept-100: #dce9fa; --kept-300: #a8c8ef; --kept-400: #7faee8;
     --kept-600: #4a83ce; --kept-text: #2f6fbf;
     --save-50: #edf7f1; --save-100: #d8f1e3; --save-300: #a3dcbe; --save-400: #86cfa8;
     --save-600: #4fa97b; --save-text: #2f8f5f;
+    --shadow: 0 10px 30px rgba(17, 19, 17, .06);
+    --inset: inset 0 1px 0 rgba(255,255,255,.7);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-width: 320px; min-height: 100%; background: var(--paper); color: var(--ink); }
   body {
     font: 15px/1.45 "SF Pro Text", "PingFang SC", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
+    background:
+      radial-gradient(1200px 520px at 12% -8%, rgba(7, 139, 69, .05), transparent 60%),
+      radial-gradient(900px 480px at 100% 0%, rgba(47, 111, 191, .04), transparent 55%),
+      linear-gradient(180deg, #ffffff 0%, var(--paper) 42%, #f4f6f4 100%);
   }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none; z-index: 0; opacity: .035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  main.dashboard { position: relative; z-index: 1; }
   button, select, input { font: inherit; color: inherit; }
   :focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -29,22 +41,26 @@
     display: grid;
     grid-template-columns: repeat(12, 1fr);
     column-gap: 24px;
-    grid-template-rows: auto auto auto auto auto 1fr auto;
+    grid-template-rows: auto auto auto auto auto 1fr;
   }
-  .topbar, .kpis, .composition, .row-trend, .detail, .footer { grid-column: 1 / -1; min-width: 0; }
+  .topbar, .kpis, .composition, .ledger, .row-trend { grid-column: 1 / -1; min-width: 0; }
   .topbar {
-    min-height: 138px; display: flex; align-items: flex-start; justify-content: space-between;
+    min-height: 138px; display: flex; align-items: center; justify-content: space-between;
     gap: 36px; padding-top: 46px;
   }
-  .brand-group { min-width: 0; display: flex; align-items: baseline; gap: 16px; }
-  .brand { display: block; width: 210px; flex: 0 0 210px; line-height: 0; }
+  .brand-group { min-width: 0; display: flex; align-items: center; gap: 16px; }
+  .brand { display: block; width: 168px; flex: 0 0 168px; line-height: 0; filter: drop-shadow(0 1px 0 rgba(255,255,255,.8)); }
   .brand img { display: block; width: 100%; height: auto; background: transparent; }
-  .slogan { color: var(--muted); font-size: 15px; letter-spacing: .02em; white-space: nowrap; }
+  .slogan {
+    color: var(--muted); font-size: 15px; letter-spacing: .02em; white-space: nowrap;
+    line-height: 1; display: flex; align-items: center; margin: 0; padding: 0;
+  }
   .controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
   .status {
     display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px;
-    border-radius: 8px; background: rgba(7, 139, 69, .07);
-    color: var(--green); font-size: 13px; white-space: nowrap;
+    border-radius: 999px; background: rgba(7, 139, 69, .08);
+    color: var(--green); font-size: 13px; font-weight: 600; white-space: nowrap;
+    box-shadow: var(--inset);
   }
   .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: breathe 2.4s ease-in-out infinite; }
   .status.off { background: var(--wash); color: var(--muted); }
@@ -52,16 +68,19 @@
   .control {
     display: inline-flex; align-items: center; gap: 8px;
     height: 36px; padding: 0 12px; max-width: 260px;
-    border: 1px solid var(--line); border-radius: 8px;
-    background: var(--paper); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 10px;
+    background: rgba(255,255,255,.78); color: var(--ink);
     font-size: 13px; line-height: 1; white-space: nowrap;
     appearance: none; cursor: pointer;
+    box-shadow: var(--inset), 0 1px 2px rgba(17,19,17,.03);
+    backdrop-filter: blur(8px);
+    transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
   }
-  .control:hover { border-color: #cfd4cf; }
+  .control:hover { border-color: #c9cec9; box-shadow: var(--inset), 0 4px 12px rgba(17,19,17,.05); }
   .control .icon { flex: 0 0 auto; color: var(--muted); }
   .control .label { overflow: hidden; text-overflow: ellipsis; }
   .control .chev { flex: 0 0 auto; margin-left: 2px; color: var(--quiet); transition: transform .16s ease; }
-  .control.open { border-color: var(--green); box-shadow: 0 0 0 3px rgba(7, 139, 69, .1); }
+  .control.open { border-color: rgba(7, 139, 69, .45); box-shadow: 0 0 0 3px rgba(7, 139, 69, .12), var(--inset); }
   .control.open .chev { transform: rotate(180deg); }
   .ctl { position: relative; z-index: 8; }
   .ctl-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--line); }
@@ -69,9 +88,10 @@
   .control.icon-btn .icon { color: var(--muted); transition: transform .35s ease, color .2s ease; }
   .control.icon-btn:hover .icon { color: var(--ink); transform: rotate(35deg); }
   .pop {
-    position: absolute; top: calc(100% + 6px); right: 0;
-    border: 1px solid var(--line); border-radius: 12px; background: var(--paper);
-    box-shadow: 0 16px 44px rgba(17, 19, 17, .13);
+    position: absolute; top: calc(100% + 8px); right: 0;
+    border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.94);
+    box-shadow: var(--shadow), 0 1px 0 rgba(255,255,255,.8) inset;
+    backdrop-filter: blur(14px);
   }
   .model-pop { width: 316px; padding: 6px; }
   .model-search { padding: 6px 6px 8px; }
@@ -140,7 +160,7 @@
   .kpi.clickable:hover .kpi-label { color: var(--green); }
   .kpi-value {
     color: var(--green); font-family: "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
-    font-size: 56px; font-weight: 500; line-height: .98; letter-spacing: -.02em;
+    font-size: 56px; font-weight: 600; line-height: .98; letter-spacing: -.03em;
     font-variant-numeric: tabular-nums; white-space: nowrap;
   }
   .kpi-value small { margin-left: 3px; font-size: 26px; }
@@ -150,7 +170,7 @@
   .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
   h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.025em; }
   .range-label { color: var(--muted); font-size: 15px; white-space: nowrap; }
-  .comp-bar { display: flex; gap: 2px; height: 14px; border-radius: 7px; overflow: hidden; background: var(--wash); }
+  .comp-bar { display: flex; gap: 2px; height: 12px; border-radius: 999px; overflow: hidden; background: rgba(243,245,243,.9); box-shadow: inset 0 1px 2px rgba(17,19,17,.04); }
   .comp-seg { height: 100%; min-width: 3px; transition: flex-grow .4s cubic-bezier(.22,.8,.2,1), opacity .18s ease, filter .18s ease; cursor: default; }
   .comp-bar:hover .comp-seg { opacity: .42; }
   .comp-bar .comp-seg:hover, .comp-bar .comp-seg.on { opacity: 1; filter: saturate(1.08); }
@@ -169,6 +189,12 @@
   .comp-legend .tokens { color: var(--save-text); font-variant-numeric: tabular-nums; }
   .comp-legend .share { width: 44px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
   .comp-legend li.kept .tokens { color: var(--kept-text); }
+  .ledger { padding: 34px 0 36px; border-top: 1px solid var(--line); }
+  .ledger-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px 28px; }
+  .ledger-grid .n { font-size: 22px; font-weight: 650; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .ledger-grid .l { margin-top: 6px; color: var(--muted); font-size: 13px; }
+  .ledger-note { margin-top: 16px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 800px) { .ledger-grid { grid-template-columns: 1fr 1fr; } }
   .row-trend { display: grid; grid-template-columns: 8fr 4fr; column-gap: 40px; padding: 34px 0 36px; border-top: 1px solid var(--line); }
   .trend, .by-source { min-width: 0; }
   .by-source { align-self: start; }
@@ -177,12 +203,11 @@
   .legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--save-400); }
   .legend .delivered { background: var(--kept-400); }
   .chart-modes { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--wash); }
-  .chart-modes button, .tabs button {
+  .chart-modes button {
     height: 26px; padding: 0 12px; border: 0; border-radius: 999px;
     background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
   }
-  .chart-modes button.on, .tabs button.on { background: var(--paper); color: var(--ink); box-shadow: 0 1px 2px rgba(17, 19, 17, .08); }
-  .tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--wash); }
+  .chart-modes button.on { background: var(--paper); color: var(--ink); box-shadow: 0 1px 2px rgba(17, 19, 17, .08); }
   .col-delivered { fill: var(--kept-400); }
   .col-avoided { fill: var(--save-400); }
   .col-hit { fill: transparent; }
@@ -222,17 +247,6 @@
   .src-bar b { display: block; height: 100%; background: var(--save-400); border-radius: 3px; }
   .src-tokens, .src-pct { font-variant-numeric: tabular-nums; text-align: right; }
   .src-link { border: 0; background: transparent; color: var(--kept-text); cursor: pointer; font-size: 12px; text-align: right; }
-  .detail { padding: 34px 0 36px; border-top: 1px solid var(--line); }
-  .detail-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  .detail-table th { padding: 0 0 12px; color: var(--muted); font-size: 13px; font-weight: 450; text-align: left; }
-  .detail-table th:nth-child(n+2), .detail-table td:nth-child(n+2) { text-align: right; }
-  .detail-table td { height: 52px; padding: 0; border-top: 1px solid var(--line); font-size: 14px; vertical-align: middle; font-variant-numeric: tabular-nums; }
-  .saved { color: var(--save-text); }
-  .detail-total { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: center; min-height: 42px; margin-top: 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
-  .detail-total b { color: var(--save-text); font-weight: 500; font-variant-numeric: tabular-nums; }
-  .more { margin-top: 8px; border: 0; background: transparent; color: var(--kept-text); cursor: pointer; font-size: 13px; }
-  .footer { min-height: 86px; display: flex; align-items: center; gap: 32px; color: var(--muted); font-size: 13px; }
-  .footer .sep { color: var(--quiet); }
   .overlay {
     position: fixed; inset: 0; background: rgba(17,19,17,.22); z-index: 40;
     opacity: 0; pointer-events: none;
@@ -241,7 +255,8 @@
   .overlay.show { opacity: 1; pointer-events: auto; }
   .drawer {
     position: fixed; inset: 0 0 0 auto; width: 480px; z-index: 41;
-    background: var(--paper); box-shadow: -18px 0 48px rgba(17,19,17,.14);
+    background: rgba(251,252,251,.96); box-shadow: -18px 0 48px rgba(17,19,17,.14);
+    backdrop-filter: blur(18px);
     transform: translateX(100%); transition: transform .36s cubic-bezier(.22,.82,.2,1);
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -263,22 +278,35 @@
   .switch input:checked + i { background: var(--save-600); }
   .switch input:checked + i::after { transform: translateX(20px); }
   .switch input:focus-visible + i { box-shadow: 0 0 0 3px rgba(79,169,123,.28); }
-  .tool-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 72px; padding: 14px 0; border-top: 1px solid var(--line); }
+  .tool-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; min-height: 72px; padding: 14px 0; border-top: 1px solid var(--line); }
   .tool-row:first-child { border-top: 0; padding-top: 4px; }
-  .tool-name { font-size: 15px; font-weight: 600; }
+  .tool-name { font-size: 15px; font-weight: 600; line-height: 31px; display: flex; align-items: center; }
   .tool-form { color: var(--quiet); font-size: 12px; font-weight: 450; margin-left: 8px; }
   .tool-status { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.4; }
   .tool-status.off { color: var(--quiet); }
+  .tool-row .switch { margin-top: 0; }
   .toast {
-    position: fixed; left: 50%; bottom: 28px; z-index: 50;
-    min-width: 196px; max-width: min(420px, calc(100% - 40px));
-    padding: 12px 18px; border: 1px solid var(--line); border-radius: 12px;
-    background: var(--paper); color: var(--ink); font-size: 13px; line-height: 1.45;
-    box-shadow: 0 18px 48px rgba(17,19,17,.16);
-    opacity: 0; pointer-events: none; transform: translate(-50%, 10px);
-    transition: opacity .28s cubic-bezier(.22,.8,.2,1), transform .28s cubic-bezier(.22,.8,.2,1);
+    position: fixed; left: 50%; top: 22px; z-index: 60;
+    min-width: 220px; max-width: min(440px, calc(100% - 40px));
+    padding: 14px 20px; border: 1px solid rgba(7, 139, 69, .28); border-radius: 14px;
+    background: linear-gradient(180deg, #f3fbf6 0%, #ffffff 70%);
+    color: var(--ink); font-size: 14px; font-weight: 550; line-height: 1.4;
+    box-shadow: 0 12px 36px rgba(7, 139, 69, .16), 0 2px 0 rgba(7, 139, 69, .08) inset;
+    opacity: 0; pointer-events: none; transform: translate(-50%, -12px) scale(.98);
+    transition: opacity .22s cubic-bezier(.22,.8,.2,1), transform .22s cubic-bezier(.22,.8,.2,1);
   }
-  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast::before {
+    content: ""; position: absolute; left: 14px; top: 50%; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--green); transform: translateY(-50%);
+    box-shadow: 0 0 0 4px rgba(7, 139, 69, .16);
+  }
+  .toast { padding-left: 34px; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  .toast.err {
+    border-color: #e2c8c8; background: linear-gradient(180deg, #fff6f6 0%, #ffffff 70%);
+    box-shadow: 0 12px 36px rgba(120, 40, 40, .12);
+  }
+  .toast.err::before { background: #c44; box-shadow: 0 0 0 4px rgba(204, 68, 68, .16); }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .72; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
   @media (max-width: 1179px) {
@@ -292,7 +320,7 @@
   @media (max-width: 980px) {
     .dashboard { width: min(100% - 40px, 860px); }
     .slogan { font-size: 14px; }
-    .brand { width: 168px; flex-basis: 168px; }
+    .brand { width: 140px; flex-basis: 140px; }
   }
   @media (max-width: 759px) {
     .dashboard { width: calc(100% - 28px); }
@@ -303,8 +331,6 @@
     .kpi + .kpi { border-top: 1px solid var(--line); }
     .kpi-value { font-size: 48px; }
     .comp-legend { grid-template-columns: 1fr; }
-    .detail-table { min-width: 420px; }
-    .detail { overflow-x: auto; }
     .chart { width: 650px; }
     .trend { overflow-x: auto; }
     .drawer { width: 100%; }
@@ -317,7 +343,7 @@
     <header class="topbar">
       <div class="brand-group">
         <a class="brand" href="/" aria-label="CTX 首页">
-          <img src="/assets/ctx-wordmark.png" alt="CTX" width="844" height="229" />
+          <img src="/assets/ctx-wordmark.png" alt="CTX" width="900" height="205" />
         </a>
         <span class="slogan">让重要的，自然抵达。</span>
       </div>
@@ -329,7 +355,7 @@
             <span class="label" id="model-text">全部模型</span>
             <svg class="chev" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.25 6 7.75 9.5 4.25" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <div class="pop model-pop" id="model-pop" hidden role="listbox" aria-label="按模型筛选">
+          <div class="pop model-pop" id="model-pop" hidden role="listbox" aria-label="筛选模型">
             <div class="model-search" id="model-search-box" hidden><input id="model-search" type="search" placeholder="搜索模型" autocomplete="off" /></div>
             <div class="model-list" id="model-list"></div>
           </div>
@@ -372,12 +398,26 @@
       <div class="kpi"><div class="kpi-value"><span id="pct">—</span><small>%</small></div><div class="kpi-label">上下文优化率</div><div class="kpi-sub" id="kpi-rate-sub">—</div></div>
       <div class="kpi"><div class="kpi-value" id="saved-tokens">—</div><div class="kpi-label">已节省 tokens</div><div class="kpi-sub" id="kpi-tokens-sub">—</div></div>
       <div class="kpi"><div class="kpi-value" id="saved-usd">—</div><div class="kpi-label">已省成本</div><div class="kpi-sub" id="kpi-usd-sub">—</div></div>
-      <div class="kpi clickable" id="kpi-harness" role="button" tabindex="0"><div class="kpi-value" id="kpi-conn">—</div><div class="kpi-label">已接入</div><div class="kpi-sub" id="kpi-conn-sub">打开设置接入 Cursor、Claude Code 或 Codex</div></div>
+      <div class="kpi clickable" id="kpi-harness" role="button" tabindex="0"><div class="kpi-value" id="kpi-conn">—</div><div class="kpi-label">已接入</div><div class="kpi-sub" id="kpi-conn-sub">打开设置接入 Cursor、Claude Code 或 ChatGPT</div></div>
     </section>
     <section class="composition">
       <div class="section-head"><h2>上下文构成</h2><span class="range-label" id="range-label">—</span></div>
       <div class="comp-bar" id="comp-bar" role="img" aria-label="上下文构成"></div>
       <ul class="comp-legend" id="comp-legend"></ul>
+    </section>
+    <section class="ledger" aria-label="实测账本">
+      <div class="section-head"><h2>实测账本</h2><span class="range-label" id="ledger-kind">—</span></div>
+      <div class="ledger-grid">
+        <div><div class="n" id="led-read">—</div><div class="l">缓存读取</div></div>
+        <div><div class="n" id="led-write">—</div><div class="l">缓存写入</div></div>
+        <div><div class="n" id="led-hit">—</div><div class="l">命中率</div></div>
+        <div><div class="n" id="led-usd">—</div><div class="l">分层计价</div></div>
+        <div><div class="n" id="led-miss">—</div><div class="l">缓存未命中</div></div>
+        <div><div class="n" id="led-retry">—</div><div class="l">回取</div></div>
+        <div><div class="n" id="led-pass">—</div><div class="l">无失败会话</div></div>
+        <div><div class="n" id="led-compact">—</div><div class="l">避开压缩</div></div>
+      </div>
+      <div class="ledger-note" id="ledger-note">运行 ctx ledger --sync 从 Claude / Codex 转录写入实测用量。</div>
     </section>
     <section class="row-trend">
       <div class="trend">
@@ -395,22 +435,6 @@
         <div id="source-rows"></div>
       </div>
     </section>
-    <section class="detail">
-      <div class="section-head">
-        <div class="tabs" id="detail-tabs" role="tablist">
-          <button type="button" role="tab" data-tab="model" class="on">按模型</button>
-          <button type="button" role="tab" data-tab="tool">按工具</button>
-          <button type="button" role="tab" data-tab="recent">最近命中</button>
-        </div>
-        <span class="range-label" id="detail-meta">—</span>
-      </div>
-      <table class="detail-table"><thead id="detail-head"></thead><tbody id="detail-rows"></tbody></table>
-      <div class="detail-total"><span id="detail-count">共 0 项</span><b id="detail-sum">—</b></div>
-      <button type="button" class="more" id="detail-more" hidden>查看全部</button>
-    </section>
-    <footer class="footer">
-      <span>更新时间：<span id="updated">—</span></span><span class="sep">•</span><span>本周已节省 <span id="week-saved">—</span> tokens</span>
-    </footer>
   </main>
   <div class="overlay" id="overlay"></div>
   <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
@@ -430,16 +454,16 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const state = { range: "7d", model: "all", from: 0, to: 0, follow: true, request: 0, cal: new Date(), chartMode: "tokens", models: [], modelStats: [], tab: "model", expand: false, drawer: false, poll: null, last: null };
+const state = { range: "7d", model: "all", from: 0, to: 0, follow: true, request: 0, cal: new Date(), chartMode: "tokens", models: [], modelStats: [], drawer: false, poll: null, last: null };
 const SAVE_RAMP = ["#4fa97b", "#6cbb92", "#86cfa8", "#a3dcbe", "#bfe8d2", "#d8f1e3", "#eaf7ef"];
 const KEPT_COLOR = "var(--kept-400)";
 const DEMO = {
   ok: true, enabled: true, range: "7d", model: "all", date_label: "8月13日 — 8月19日",
   totals: { raw: 453000, delivered: 177100, avoided: 275900, refetched: 0, net_avoided: 275900, reduction_pct: 61 },
   avoided_usd: 0.27, avoided_usd_estimated: true, default_billing_model: "",
-  model_options: [{ id: "default", name: "Auto（自动选择）" }, { id: "grok-4.6", name: "grok-4.6" }],
+  model_options: [{ id: "default", name: "Auto" }, { id: "grok-4.6", name: "Grok 4.6" }],
   models: [
-    { id: "default", name: "Auto（自动选择）", avoided: 780, reduction_pct: 21, input_usd_per_mtok: 2, price_estimate: true },
+    { id: "default", name: "Auto", avoided: 780, reduction_pct: 21, input_usd_per_mtok: null, price_estimate: false },
     { id: "grok-4.6", name: "grok-4.6", avoided: 200, reduction_pct: 1, input_usd_per_mtok: 2, price_estimate: false }
   ],
   composition: [
@@ -451,13 +475,13 @@ const DEMO = {
   series: [["8月13日", 0, 0], ["8月14日", 0, 0], ["8月15日", 0, 0], ["8月16日", 0, 0], ["8月17日", 24858, 6800], ["8月18日", 105000, 42000], ["8月19日", 252000, 99000]].map(([label, raw, delivered], t) => ({ t, label, raw, delivered })),
   by_harness: [
     { id: "cursor", name: "Cursor", capability: "auto", raw: 300000, delivered: 110000, avoided: 190000, reduction_pct: 63 },
-    { id: "codex", name: "Codex", capability: "retrieval", raw: 0, delivered: 0, avoided: 0, reduction_pct: 0 }
+    { id: "codex", name: "ChatGPT", capability: "auto", raw: 0, delivered: 0, avoided: 0, reduction_pct: 0 }
   ],
-  recent: [], harness_summary: { auto_on: 2, total: 3, names: ["Cursor", "Claude Code"], retrieval: 1, on: 2 },
+  recent: [], harness_summary: { auto_on: 2, total: 3, names: ["Cursor", "Claude Code"], retrieval: 0, on: 2 },
   tools: [
     { id: "cursor", name: "Cursor", form_label: "Desktop / CLI", installed: true, enabled: true, capability: "auto", status: "hooks 已接入" },
     { id: "claude-code", name: "Claude Code", form_label: "CLI", installed: true, enabled: true, capability: "auto", status: "hooks 已接入" },
-    { id: "codex", name: "Codex", form_label: "Desktop / CLI", installed: false, enabled: true, capability: "retrieval", status: "未安装" }
+    { id: "codex", name: "ChatGPT", form_label: "Desktop / CLI", installed: false, enabled: true, capability: "auto", status: "未安装" }
   ],
   pages: 0, store_bytes: 0, snapshots: []
 };
@@ -638,30 +662,35 @@ function renderSources(rows) {
       const id = btn.dataset.setup;
       toast("正在接入…");
       const setup = await post(`/api/setup?target=${encodeURIComponent(id)}`);
-      if (setup.ok === false) { toast(setup.error || "接入失败"); return; }
-      toast("已开启");
+      if (setup.ok === false) { toast(setup.error || "接入失败", "err"); return; }
+      toast("已开启 · 自动优化");
       loadSettings();
       refresh(true);
     };
   });
 }
-function renderDetail(data) {
-  const tab = state.tab;
-  const head = $("detail-head");
-  const body = $("detail-rows");
-  let rows = [];
-  if (tab === "tool") rows = (data.by_harness || []).map((h) => ({ name: h.name, extra: h.capability === "auto" ? "自动优化" : "仅检索", saved: h.avoided, pct: h.reduction_pct }));
-  else if (tab === "recent") rows = (data.recent || []).map((r) => ({ name: r.label || r.opt || "命中", extra: r.uri || "", saved: Number(r.raw || 0) - Number(r.delivered || 0), pct: r.raw ? Math.round((1 - r.delivered / r.raw) * 1000) / 10 : 0 }));
-  else rows = (data.models || []).map((m) => ({ name: m.name || m.id, extra: m.input_usd_per_mtok ? rate(m.input_usd_per_mtok) : "", saved: m.avoided, pct: m.reduction_pct, est: m.price_estimate }));
-  const all = rows.length;
-  const shown = state.expand ? rows : rows.slice(0, 8);
-  head.innerHTML = `<tr><th>${tab === "recent" ? "命中" : tab === "tool" ? "工具" : "模型"}</th><th>已节省</th><th>占比</th></tr>`;
-  body.innerHTML = shown.length ? shown.map((r, i) => `<tr><td>${esc(r.name)}${r.est ? '<span class="est">估</span>' : ""}${r.extra ? `<div class="opt-meta">${esc(r.extra)}</div>` : ""}</td><td class="saved">${compact(r.saved || 0)}</td><td>${Number(r.pct || 0).toFixed(1)}%</td></tr>`).join("") : `<tr><td colspan="3" style="color:var(--muted)">暂无数据</td></tr>`;
-  $("detail-count").textContent = `共 ${all} 项`;
-  $("detail-sum").textContent = compact(rows.reduce((s, r) => s + Number(r.saved || 0), 0));
-  $("detail-meta").textContent = data.date_label || "—";
-  $("detail-more").hidden = all <= 8;
-  $("detail-more").textContent = state.expand ? "收起" : `查看全部 ${all} 项`;
+function renderLedger(led) {
+  const L = led || {};
+  const compactN = (n) => compact(Number(n || 0));
+  $("led-read").textContent = compactN(L.cache_read_tokens);
+  $("led-write").textContent = compactN(L.cache_write_tokens);
+  $("led-hit").textContent = L.hit_rate != null ? `${Math.round(Number(L.hit_rate) * 100)}%` : "—";
+  $("led-usd").textContent = L.usd != null ? money(L.usd) : "—";
+  if ($("led-miss")) $("led-miss").textContent = compactN(L.cache_miss_tokens);
+  if ($("led-retry")) $("led-retry").textContent = compactN(L.retries ?? L.page_faults);
+  if ($("led-pass")) $("led-pass").textContent = compactN(L.task_passed);
+  if ($("led-compact")) $("led-compact").textContent = L.avoided_compact_usd != null ? money(L.avoided_compact_usd) : "—";
+  $("ledger-kind").textContent = L.kind === "measured" ? "来自转录" : "尚未同步";
+  const bits = [];
+  if (L.turns) bits.push(`${L.turns} 轮`);
+  if (L.compact_events) bits.push(`压缩 ${L.compact_events} 次`);
+  if (L.page_faults) bits.push(`回取 ${L.page_faults}`);
+  if (L.cache_miss_turns) bits.push(`未命中 ${L.cache_miss_turns} 轮`);
+  if (L.advice && L.advice.keep_cache === false) bits.push(`建议新纪元 · ${L.advice.reason}`);
+  else if (L.advice && L.advice.keep_cache) bits.push("保持热缓存");
+  if (L.plan_type) bits.push(`${L.plan_type} ${L.quota_used_pct != null ? Math.round(L.quota_used_pct) + "%" : ""}`);
+  if (L.resets_at) bits.push(`重置 ${L.resets_at}`);
+  $("ledger-note").textContent = bits.join(" · ") || "运行 ctx ledger --sync 从 Claude / Codex 转录写入实测用量。";
 }
 function updateOptions(options, selected) {
   state.models = [{ id: "all", name: "全部模型" }].concat(Array.isArray(options) ? options : []);
@@ -680,7 +709,8 @@ function renderModelList() {
     const meta = [];
     if (m.id === "all") meta.push("全部来源汇总");
     if (stat) {
-      if (stat.input_usd_per_mtok) meta.push(rate(stat.input_usd_per_mtok) + (stat.price_estimate ? " · 估算" : ""));
+      if (stat.input_usd_per_mtok != null) meta.push(rate(stat.input_usd_per_mtok));
+      else if (stat && m.id !== "all") meta.push("未定价");
       const sources = Array.isArray(stat.source_harnesses) ? stat.source_harnesses : [];
       if (sources.length) meta.push(sources.join(" · "));
     }
@@ -703,18 +733,20 @@ function render(data) {
   $("state").textContent = data.enabled === false ? "已暂停" : "运行中";
   tween($("pct"), totals.reduction_pct, (n) => String(Math.round(n)));
   tween($("saved-tokens"), totals.net_avoided ?? totals.avoided, compact);
-  $("saved-usd").innerHTML = `${esc(money(data.avoided_usd))}${data.avoided_usd_estimated ? '<span class="est" title="未上报具体模型，按默认官网价估算">估</span>' : ""}`;
+  $("saved-usd").innerHTML = `${esc(money(data.avoided_usd))}${data.avoided_usd_estimated ? '<span class="est" title="仅含已识别模型；Auto / other 未计入">估</span>' : ""}`;
   $("kpi-rate-sub").textContent = `原文 ${compact(totals.raw)} → 有效输入 ${compact(totals.delivered)}`;
   const net = totals.net_avoided ?? totals.avoided;
   const refetched = totals.refetched || 0;
   $("kpi-tokens-sub").textContent = refetched || totals.net_avoided != null ? `净节省 ${compact(net)} · 回取 ${compact(refetched)}` : `本周 ${compact(totals.avoided)}`;
-  $("kpi-usd-sub").textContent = data.avoided_usd_estimated ? "未上报具体模型，按默认官网价估算" : (data.priced_models ? `官网价 · ${data.priced_models} 个模型` : "未定价");
+  $("kpi-usd-sub").textContent = data.priced_models
+    ? `官网输入价 · ${data.priced_models} 个已识别模型`
+    : (data.unpriced_models ? "有 Auto / other，未计入金额" : "未定价");
   const tools = Array.isArray(data.tools) ? data.tools : (data.harness_summary && data.harness_summary.tools) || [];
   const onTools = tools.filter((t) => t.installed && t.enabled !== false);
   $("kpi-conn").textContent = `${onTools.length}/3`;
   $("kpi-conn-sub").textContent = onTools.length
     ? onTools.map((t) => t.name).join(" · ")
-    : "打开设置接入 Cursor、Claude Code 或 Codex";
+    : "打开设置接入 Cursor、Claude Code 或 ChatGPT";
   $("range-label").textContent = data.date_label || "—";
   state.range = data.range || state.range;
   if (data.from) state.from = Number(data.from);
@@ -727,9 +759,7 @@ function render(data) {
   state.series = data.series || [];
   renderChart(state.series);
   renderSources(data.by_harness || []);
-  renderDetail(data);
-  $("week-saved").textContent = compact(net || totals.avoided || 0);
-  $("updated").textContent = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()).replaceAll("/", "-");
+  renderLedger(data.ledger);
 }
 async function refresh(force) {
   if (state.drawer && !force) return;
@@ -751,13 +781,16 @@ async function post(url, body) {
   return res.json().catch(() => ({ ok: false }));
 }
 let toastTimer = 0;
-function toast(message) {
+function toast(message, kind) {
   const el = $("toast");
   if (!el || !message) return;
   el.textContent = message;
+  el.classList.toggle("err", kind === "err");
+  el.classList.remove("show");
+  void el.offsetWidth;
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+  toastTimer = setTimeout(() => el.classList.remove("show"), kind === "err" ? 3200 : 1800);
 }
 function openDrawer(anchor) {
   state.drawer = true;
@@ -811,16 +844,16 @@ function bindHarnessActions() {
           const setup = await post(`/api/setup?target=${encodeURIComponent(id)}`);
           if (setup.ok === false) {
             el.checked = false;
-            toast(setup.error || `${name} 接入失败`);
+            toast(setup.error || `${name} 接入失败`, "err");
             return;
           }
           await post(`/api/harness?id=${encodeURIComponent(id)}&enabled=1`);
-          toast(`${name} 已开启`);
+          toast(`${name} 已开启 · 自动优化`);
         } else {
           const result = await post(`/api/harness?id=${encodeURIComponent(id)}&enabled=${enable ? 1 : 0}`);
           if (result.ok === false) {
             el.checked = !enable;
-            toast(result.error || `${name} 切换失败`);
+            toast(result.error || `${name} 切换失败`, "err");
             return;
           }
           toast(enable ? `${name} 已开启` : `${name} 已关闭`);
@@ -937,14 +970,6 @@ $("chart-modes").addEventListener("click", (event) => {
   $("chart-modes").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
   renderChart(state.series || []);
 });
-$("detail-tabs").addEventListener("click", (event) => {
-  const btn = event.target.closest("button[data-tab]");
-  if (!btn) return;
-  state.tab = btn.dataset.tab; state.expand = false;
-  $("detail-tabs").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
-  if (state.last) renderDetail(state.last);
-});
-$("detail-more").addEventListener("click", () => { state.expand = !state.expand; if (state.last) renderDetail(state.last); });
 $("range-trigger").addEventListener("click", (event) => { event.stopPropagation(); closeModel(); if ($("range-pop").hidden) openRange(); else closeRange(); });
 $("range-pop").addEventListener("click", (event) => event.stopPropagation());
 document.addEventListener("click", () => { closeRange(); closeModel(); });
@@ -989,7 +1014,7 @@ $("cfg-enabled").addEventListener("change", () => {
   post(on ? "/api/resume" : "/api/pause").then((result) => {
     if (result.ok === false) {
       $("cfg-enabled").checked = !on;
-      toast(result.error || "切换失败");
+      toast(result.error || "切换失败", "err");
       return;
     }
     toast(on ? "CTX 已开启" : "CTX 已暂停");

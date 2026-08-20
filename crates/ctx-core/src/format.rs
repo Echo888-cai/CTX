@@ -59,7 +59,7 @@ pub fn render_virtualized_space(
 }
 
 pub fn session_banner() -> &'static str {
-    "CTX on. ctx_fetch(uri#frame) · ctx_search · ctx_read"
+    "CTX on. L0/L1 frozen. ctx_fetch · ctx_search · ctx_read"
 }
 
 /// Make `ctx exec` output scan as: command, exit, body, handle.

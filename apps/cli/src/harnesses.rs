@@ -52,11 +52,11 @@ const SPECS: &[Spec] = &[
     },
     Spec {
         id: "codex",
-        name: "Codex",
+        name: "ChatGPT",
         form: "desktop+cli",
-        integration: "mcp",
-        capability: "retrieval",
-        config_paths: &["~/.codex/config.toml"],
+        integration: "hooks",
+        capability: "auto",
+        config_paths: &["~/.codex/hooks.json", "~/.codex/config.toml"],
         shared_with: &[],
     },
     Spec {
@@ -245,7 +245,11 @@ pub fn capability(id: &str) -> &'static str {
 pub fn display_name(id: &str) -> String {
     SPECS
         .iter()
-        .find(|s| s.id == id || (id == "claude" && s.id == "claude-code"))
+        .find(|s| {
+            s.id == id
+                || (id == "claude" && s.id == "claude-code")
+                || (matches!(id, "chatgpt" | "openai-codex") && s.id == "codex")
+        })
         .map(|s| s.name.to_string())
         .unwrap_or_else(|| id.to_string())
 }
@@ -287,9 +291,11 @@ fn install_state(spec: &Spec, home: Option<&std::path::Path>) -> (bool, bool, Ve
             (file_has_mcp(&path), false, vec![])
         }
         "codex" => {
+            let hooks = home.join(".codex").join("hooks.json");
             let path = home.join(".codex").join("config.toml");
-            let text = std::fs::read_to_string(path).unwrap_or_default();
-            (text.contains("[mcp_servers.ctx]"), false, vec![])
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let installed = file_has_hooks(&hooks) || text.contains("[mcp_servers.ctx]");
+            (installed, file_stale(&hooks), vec!["user".into()])
         }
         "windsurf" => {
             let path = home

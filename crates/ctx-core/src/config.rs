@@ -36,8 +36,8 @@ pub struct Config {
     /// Shadow only these harness ids; empty + `shadow_mode` = global.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shadow_harnesses: Vec<String>,
-    /// SimHash Hamming radius for near-duplicate tool output. 0 disables.
-    /// Not exposed in settings — keep the default unless a test overrides it.
+    /// SimHash Hamming radius for near-duplicate tool output. 0 disables
+    /// (default). Status-code / digit-run changes never collapse even if >0.
     #[serde(default = "default_hamming")]
     pub near_duplicate_hamming: u32,
 }
@@ -55,7 +55,7 @@ fn default_strategy() -> String {
     "balanced".into()
 }
 fn default_hamming() -> u32 {
-    3
+    0
 }
 
 impl Default for Config {

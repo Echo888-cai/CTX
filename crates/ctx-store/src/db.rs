@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 12;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -105,10 +105,6 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_obs_created ON observations(created_at);
         CREATE INDEX IF NOT EXISTS idx_obs_uri ON observations(uri);
         CREATE INDEX IF NOT EXISTS idx_fp_norm ON fingerprints(normalized_hash);
-        CREATE INDEX IF NOT EXISTS idx_fp_band0 ON fingerprints(band0);
-        CREATE INDEX IF NOT EXISTS idx_fp_band1 ON fingerprints(band1);
-        CREATE INDEX IF NOT EXISTS idx_fp_band2 ON fingerprints(band2);
-        CREATE INDEX IF NOT EXISTS idx_fp_band3 ON fingerprints(band3);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
             uri UNINDEXED,
@@ -297,6 +293,105 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 refetched INTEGER NOT NULL DEFAULT 0,
                 tune REAL NOT NULL DEFAULT 1.0,
                 updated_at INTEGER NOT NULL
+            );
+            "#,
+        );
+    }
+
+    if current < 11 {
+        let _ = conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS ledger_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                harness TEXT NOT NULL,
+                session TEXT NOT NULL DEFAULT '',
+                cwd TEXT NOT NULL DEFAULT '',
+                model_raw TEXT NOT NULL DEFAULT '',
+                model_base TEXT NOT NULL DEFAULT '',
+                effort TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_5m INTEGER NOT NULL DEFAULT 0,
+                cache_write_1h INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                context_window INTEGER NOT NULL DEFAULT 0,
+                is_compaction INTEGER NOT NULL DEFAULT 0,
+                quota_used_pct REAL,
+                plan_type TEXT NOT NULL DEFAULT '',
+                confidence TEXT NOT NULL DEFAULT 'estimated',
+                source_path TEXT NOT NULL DEFAULT '',
+                UNIQUE(harness, session, ts, input_tokens, output_tokens, cache_read_tokens)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ledger_ts ON ledger_turns(ts);
+            CREATE INDEX IF NOT EXISTS idx_ledger_session ON ledger_turns(session);
+
+            CREATE TABLE IF NOT EXISTS epochs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                epoch INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                thinking TEXT NOT NULL DEFAULT '',
+                tools_hash TEXT NOT NULL DEFAULT '',
+                system_hash TEXT NOT NULL DEFAULT '',
+                workspace_snapshot TEXT NOT NULL DEFAULT '',
+                prefix_hash TEXT NOT NULL DEFAULT '',
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                rotate_reason TEXT NOT NULL DEFAULT '',
+                UNIQUE(session_id, epoch)
+            );
+
+            CREATE TABLE IF NOT EXISTS overlays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                epoch INTEGER NOT NULL DEFAULT 1,
+                seq INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                prev_hash TEXT NOT NULL DEFAULT '',
+                new_hash TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                UNIQUE(session_id, epoch, seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_overlay_session ON overlays(session_id, epoch);
+
+            CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                file_count INTEGER NOT NULL,
+                manifest TEXT NOT NULL DEFAULT '{}'
+            );
+            "#,
+        );
+    }
+
+    if current < 12 {
+        let _ = conn.execute(
+            "ALTER TABLE ledger_turns ADD COLUMN resets_at TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                epoch INTEGER NOT NULL DEFAULT 1,
+                seq INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                UNIQUE(session_id, epoch, seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_journal_session ON journal(session_id, epoch);
+
+            CREATE TABLE IF NOT EXISTS capabilities (
+                handle TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                schema_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL
             );
             "#,
         );

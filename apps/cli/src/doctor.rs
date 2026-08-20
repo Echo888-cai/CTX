@@ -1,8 +1,12 @@
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use ctx_core::CtxPaths;
+use ctx_mcp::{read_message, write_message, Framing};
 
 #[derive(Debug, Clone)]
 pub struct Check {
@@ -34,6 +38,8 @@ impl DoctorReport {
                 )
         }) {
             lines.push("Next: ctx setup claude, cursor, windsurf, or vscode".into());
+        } else if self.checks.iter().any(|c| !c.ok && c.name == "mcp-live") {
+            lines.push("Next: ctx mcp handshake failed — NDJSON initialize/tools/list.".into());
         } else if self.checks.iter().any(|c| !c.ok && c.name == "database") {
             lines.push("Next: ctx init".into());
         } else {
@@ -50,23 +56,38 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 pub fn collect() -> anyhow::Result<DoctorReport> {
-    let paths = CtxPaths::default_home()?;
     let home = dirs::home_dir();
-    Ok(DoctorReport {
-        checks: vec![
-            binary_check(),
-            store_check(&paths),
-            db_check(&paths),
-            claude_hooks_check(home.as_deref()),
-            cursor_hooks_check(home.as_deref()),
-            claude_desktop_check(home.as_deref()),
-            windsurf_mcp_check(home.as_deref()),
-            vscode_mcp_check(home.as_deref()),
-            continue_mcp_check(home.as_deref()),
-            jetbrains_mcp_check(home.as_deref()),
-            mcp_check(home.as_deref()),
-        ],
-    })
+    let mut checks = vec![binary_check()];
+    match CtxPaths::default_home() {
+        Ok(paths) => {
+            checks.push(store_check(&paths));
+            checks.push(db_check(&paths));
+        }
+        Err(err) => {
+            checks.push(Check {
+                ok: false,
+                name: "store",
+                detail: err.to_string(),
+            });
+            checks.push(Check {
+                ok: false,
+                name: "database",
+                detail: "store unavailable".into(),
+            });
+        }
+    }
+    checks.extend([
+        claude_hooks_check(home.as_deref()),
+        cursor_hooks_check(home.as_deref()),
+        claude_desktop_check(home.as_deref()),
+        windsurf_mcp_check(home.as_deref()),
+        vscode_mcp_check(home.as_deref()),
+        continue_mcp_check(home.as_deref()),
+        jetbrains_mcp_check(home.as_deref()),
+        mcp_check(home.as_deref()),
+        mcp_live_check(),
+    ]);
+    Ok(DoctorReport { checks })
 }
 
 fn binary_check() -> Check {
@@ -446,6 +467,126 @@ fn mcp_check(home: Option<&Path>) -> Check {
     }
 }
 
+const MCP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn mcp_live_check() -> Check {
+    match handshake_ctx_mcp() {
+        Ok(detail) => Check {
+            ok: true,
+            name: "mcp-live",
+            detail,
+        },
+        Err(detail) => Check {
+            ok: false,
+            name: "mcp-live",
+            detail,
+        },
+    }
+}
+
+fn handshake_ctx_mcp() -> Result<String, String> {
+    let bin = ctx_core::resolve_ctx_bin().ok_or_else(|| {
+        "ctx binary not found (install ctx, or set CTX_BIN)".to_string()
+    })?;
+    let mut child = Command::new(&bin)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn `{bin} mcp`: {e}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "ctx mcp has no stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ctx mcp has no stdout".to_string())?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(handshake_stdio(stdin, stdout)).ok();
+    });
+    let result = match rx.recv_timeout(MCP_HANDSHAKE_TIMEOUT) {
+        Ok(r) => r,
+        Err(_) => Err("ctx mcp handshake timed out (3s)".into()),
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn handshake_stdio(
+    mut stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
+) -> Result<String, String> {
+    let mut reader = BufReader::new(stdout);
+
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "ctx-doctor", "version": env!("CARGO_PKG_VERSION") }
+        }
+    });
+    write_message(&mut stdin, Framing::Ndjson, &init).map_err(|e| e.to_string())?;
+
+    let (init_msg, framing) = read_message(&mut reader)
+        .map_err(|e| format!("read initialize: {e}"))?
+        .ok_or_else(|| "ctx mcp closed stdout before initialize reply".to_string())?;
+    if framing != Framing::Ndjson {
+        return Err(
+            "server replied with Content-Length; MCP stdio requires newline-delimited JSON"
+                .into(),
+        );
+    }
+    let protocol = init_msg
+        .get("result")
+        .and_then(|r| r.get("protocolVersion"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    if protocol != "2025-06-18" {
+        return Err(format!(
+            "protocolVersion {protocol} (client asked 2025-06-18)"
+        ));
+    }
+
+    let list = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    });
+    write_message(&mut stdin, Framing::Ndjson, &list).map_err(|e| e.to_string())?;
+    let (list_msg, _) = read_message(&mut reader)
+        .map_err(|e| format!("read tools/list: {e}"))?
+        .ok_or_else(|| "ctx mcp closed stdout before tools/list reply".to_string())?;
+    let tools = list_msg
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let names: Vec<String> = tools
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .collect();
+    for need in ["ctx_fetch", "ctx_read", "ctx_search"] {
+        if !names.iter().any(|n| n == need) {
+            return Err(format!("tools/list missing {need} ({names:?})"));
+        }
+    }
+    Ok(format!(
+        "ndjson · protocol {protocol} · {} tools",
+        names.len()
+    ))
+}
+
 fn label_for(path: &Path) -> String {
     let s = path.to_string_lossy();
     if s.contains(".cursor") {
@@ -639,6 +780,20 @@ mod tests {
         };
         let lines = parse_report_lines(&report.render());
         assert_eq!(lines, vec![('✓', "binary".into()), ('·', "mcp".into())]);
+    }
+
+    #[test]
+    fn live_mcp_failure_points_at_handshake() {
+        let rendered = DoctorReport {
+            checks: vec![Check {
+                ok: false,
+                name: "mcp-live",
+                detail: "server replied with Content-Length".into(),
+            }],
+        }
+        .render();
+        assert!(rendered.contains("handshake"), "{rendered}");
+        assert!(rendered.contains("NDJSON"), "{rendered}");
     }
 
     #[test]

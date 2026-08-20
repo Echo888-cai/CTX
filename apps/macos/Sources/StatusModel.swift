@@ -88,8 +88,10 @@ final class StatusModel: ObservableObject {
             composition = payload.composition
             unpricedModels = payload.unpricedModels
             error = nil
+            NotificationCenter.default.post(name: .ctxStatusDidChange, object: nil)
         } catch {
             self.error = error.localizedDescription
+            NotificationCenter.default.post(name: .ctxStatusDidChange, object: nil)
         }
     }
 
@@ -98,6 +100,7 @@ final class StatusModel: ObservableObject {
             _ = try CtxCLI.run([on ? "resume" : "pause"])
             enabled = on
             refresh()
+            NotificationCenter.default.post(name: .ctxStatusDidChange, object: nil)
         } catch {
             self.error = error.localizedDescription
         }
@@ -364,7 +367,7 @@ enum LoginItem {
     static func setEnabled(_ on: Bool) throws {
         let plist = plistURL
         if on {
-            guard let exe = Bundle.main.executableURL?.path else { return }
+            let app = Bundle.main.bundleURL.path
             let body = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -374,10 +377,14 @@ enum LoginItem {
               <string>\(label)</string>
               <key>ProgramArguments</key>
               <array>
-                <string>\(exe)</string>
+                <string>/usr/bin/open</string>
+                <string>-ga</string>
+                <string>\(app)</string>
               </array>
               <key>RunAtLoad</key>
               <true/>
+              <key>LimitLoadToSessionType</key>
+              <string>Aqua</string>
             </dict>
             </plist>
             """

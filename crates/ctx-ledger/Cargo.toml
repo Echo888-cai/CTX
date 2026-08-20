@@ -1,0 +1,18 @@
+[package]
+name = "ctx-ledger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Measured provider usage from Claude Code / Codex / Cursor transcripts"
+
+[dependencies]
+ctx-store.workspace = true
+dirs.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

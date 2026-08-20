@@ -137,7 +137,7 @@ pub fn strip_target(target: &str) -> anyhow::Result<()> {
         "vscode" | "code" => strip_vscode(&home),
         "continue" => strip_continue(&home),
         "jetbrains" | "idea" => strip_jetbrains(&home),
-        "codex" => strip_codex(&home),
+        "codex" | "chatgpt" => strip_codex(&home),
         "copilot" => strip_vscode(&home),
         "aider" => Ok(()),
         other => bail!("unknown target {other}"),
@@ -208,14 +208,29 @@ fn strip_jetbrains(home: &Path) -> anyhow::Result<()> {
 }
 
 fn strip_codex(home: &Path) -> anyhow::Result<()> {
+    let hooks = home.join(".codex").join("hooks.json");
+    if hooks.exists() {
+        if let Ok(mut root) = read_json_object(&hooks) {
+            if let Some(map) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                for (_event, entry) in map.iter_mut() {
+                    if let Some(arr) = entry.as_array_mut() {
+                        arr.retain(|item| !hooks_contain_ctx(Some(item)));
+                    }
+                }
+            }
+            let _ = write_json_atomic(&hooks, &root);
+            println!("  ✓  ChatGPT  hooks cleared");
+        }
+    }
+
     let path = home.join(".codex").join("config.toml");
     if !path.exists() {
-        println!("  ·  Codex  no config.toml");
+        println!("  ·  ChatGPT  no config.toml");
         return Ok(());
     }
     let text = fs::read_to_string(&path)?;
     if !text.contains("[mcp_servers.ctx]") {
-        println!("  ·  Codex  no CTX mcp");
+        println!("  ·  ChatGPT  no CTX mcp");
         return Ok(());
     }
     let mut out = String::new();
@@ -239,7 +254,7 @@ fn strip_codex(home: &Path) -> anyhow::Result<()> {
         }
     }
     fs::write(&path, out)?;
-    println!("  ✓  Codex  mcp removed");
+    println!("  ✓  ChatGPT  mcp removed");
     Ok(())
 }
 

@@ -32,6 +32,8 @@ CTX is **lossless virtualization**:
 1. **Raw context is immutable.** Nothing in the store is rewritten.
 2. **Every reduction is reversible.** `ctx://shell/abc#auth::login` walks a page table, not a guess.
 
+The upgrade path — cache-stable prefix, ledger-priced bills, intercept plane — is in [docs/plan/cache-stable-runtime.md](docs/plan/cache-stable-runtime.md).
+
 No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + zstd.
 
 ## Install
@@ -122,7 +124,7 @@ Details: [docs/architecture.md](docs/architecture.md)
 | | |
 |---|---|
 | **Claude Code** | Replaces tool output in place (`updatedToolOutput`). |
-| **Cursor** | Wraps shell as `ctx exec`. MCP output replaced. Large files → `ctx_read`. |
+| **Cursor** | Wraps shell as `ctx exec`. MCP output replaced. Large files stay readable (fail-open). |
 | **Windsurf** | MCP, same shape as Cursor. |
 | **VS Code / Copilot** | Extension + user/workspace MCP. Status bar shows avoided tokens. |
 | **Continue.dev** | `~/.continue/mcpServers/ctx.yaml` |

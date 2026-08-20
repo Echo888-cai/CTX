@@ -435,7 +435,7 @@ if !runtime.config.enabled || runtime.is_harness_disabled(harness) {
 1. `fingerprints` 表加 `simhash INTEGER`（64 位，存 `i64`）+ 4 个分段列 `band0..band3`（每 16 位一段）建索引，实现"近邻查询不用全表扫"
 2. 计算：对归一化后的文本做 3-gram shingle（先跑现有 `normalize_hash` 的归一化：数字、hex、路径、时间戳全部替换成占位符），每个 shingle 取 64 位哈希，按位加权求和取符号位 → SimHash
 3. 查询：按 4 个 band 任一命中的候选里，算 Hamming 距离 ≤ 3 的最近一条 → 判为近似重复，走 `DuplicateGuard::render`，文案改成「与 ctx://… 近似（差异 N 行）」并附上真实 diff 的前 20 行
-4. 阈值可配：`Config.near_duplicate_hamming`（默认 3，0 = 关闭）
+4. 阈值可配：`Config.near_duplicate_hamming`（默认 0 = 关闭近似折叠；仅精确/空白归一化合并）
 
 **验收**：两份仅时间戳/耗时不同的 `cargo test` 输出，第二份 `delivered_tokens < 200` 且 `optimizer == "duplicate"`。
 

@@ -7,7 +7,7 @@ pub const DEFAULT_HOME_ENV: &str = "CTX_HOME";
 #[derive(Debug, Clone)]
 pub struct CtxPaths {
     root: PathBuf,
-    /// True when `~/.ctx` (or `$CTX_HOME`) was not writable and we used `./.ctx`.
+    /// Legacy flag. `default_home` never sets this; an unwritable home is an error.
     pub fallback: bool,
 }
 
@@ -20,19 +20,23 @@ impl CtxPaths {
     }
 
     pub fn default_home() -> Result<Self> {
-        if let Ok(p) = std::env::var(DEFAULT_HOME_ENV) {
-            let preferred = Self::from_root(PathBuf::from(p));
-            if can_write(&preferred) {
-                return Ok(preferred);
-            }
-            return Ok(workspace_fallback());
-        }
-        let home = dirs::home_dir().ok_or(StoreError::NoHome)?;
-        let preferred = Self::from_root(home.join(".ctx"));
+        let preferred = if let Ok(p) = std::env::var(DEFAULT_HOME_ENV) {
+            Self::from_root(PathBuf::from(p))
+        } else {
+            let home = dirs::home_dir().ok_or(StoreError::NoHome)?;
+            Self::from_root(home.join(".ctx"))
+        };
+        Self::open_preferred(preferred)
+    }
+
+    /// Accept this root if it is writable. Never fall back to another tree.
+    pub fn open_preferred(preferred: Self) -> Result<Self> {
         if can_write(&preferred) {
             return Ok(preferred);
         }
-        Ok(workspace_fallback())
+        Err(StoreError::HomeNotWritable {
+            path: preferred.root.display().to_string(),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -74,14 +78,6 @@ impl CtxPaths {
     }
 }
 
-fn workspace_fallback() -> CtxPaths {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    CtxPaths {
-        root: cwd.join(".ctx"),
-        fallback: true,
-    }
-}
-
 /// Probe: can we create the tree and write a byte? Cursor sandboxes often block `~/.ctx`.
 pub fn can_write(paths: &CtxPaths) -> bool {
     if paths.ensure().is_err() {
@@ -115,5 +111,20 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let paths = CtxPaths::from_root(file);
         assert!(!can_write(&paths));
+    }
+
+    #[test]
+    fn unwritable_preferred_does_not_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let err = CtxPaths::open_preferred(CtxPaths::from_root(file.clone())).unwrap_err();
+        match err {
+            crate::StoreError::HomeNotWritable { path } => {
+                assert!(path.contains("not-a-dir"), "{path}");
+            }
+            other => panic!("expected HomeNotWritable, got {other}"),
+        }
+        assert!(!tmp.path().join(".ctx").exists());
     }
 }

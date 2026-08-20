@@ -160,7 +160,11 @@ impl PriceBook {
         Self::load(paths, default_billing_model)
     }
 
-    pub fn catalog() -> Vec<CatalogEntry> {
+    pub fn default_billing_model(&self) -> &str {
+        &self.default_billing_model
+    }
+
+        pub fn catalog() -> Vec<CatalogEntry> {
         CATALOG
             .iter()
             .map(|(id, usd, name)| CatalogEntry {
@@ -176,13 +180,14 @@ impl PriceBook {
         self.quote(model_id).map(|q| q.usd_per_mtok)
     }
 
-    /// Rate plus provenance, so callers can mark estimates.
+    /// Rate plus provenance. Auto / unknown ids return `None` — inventing a
+    /// dollar figure without a named model is not honest.
     pub fn quote(&self, model_id: &str) -> Option<PriceQuote> {
-        let (key, fell_back) = self.resolve(model_id)?;
+        let key = self.resolve(model_id)?;
         let (usd, source) = self.prices.get(&key).copied()?;
         Some(PriceQuote {
             usd_per_mtok: usd,
-            source: if fell_back { PriceSource::Fallback } else { source },
+            source,
             matched_id: key,
         })
     }
@@ -192,31 +197,67 @@ impl PriceBook {
         Some(round_usd(avoided_tokens as f64 / 1_000_000.0 * price))
     }
 
-    fn resolve(&self, model_id: &str) -> Option<(String, bool)> {
-        let mut raw = model_id.trim();
-        let mut fell_back = false;
-        if is_auto_id(raw) {
-            fell_back = true;
-            raw = self.default_billing_model.trim();
-            if raw.is_empty() {
-                raw = FALLBACK_MODEL;
+    /// Human label for a stored model id: catalog name when known, else the id,
+    /// else `other` / `Auto`.
+    pub fn display_name(model_id: &str) -> String {
+        let id = model_id.trim();
+        if id.is_empty() || id == "__unknown__" || id.eq_ignore_ascii_case("unknown") {
+            return "other".into();
+        }
+        if id.eq_ignore_ascii_case("default") || id.eq_ignore_ascii_case("auto") {
+            return "Auto".into();
+        }
+        let mut key = normalize(id);
+        for _ in 0..8 {
+            if let Some((_, _, name)) = CATALOG.iter().find(|(cid, _, _)| normalize(cid) == key) {
+                return (*name).into();
             }
+            if let Some((_, to)) = ALIASES.iter().find(|(from, _)| normalize(from) == key) {
+                key = normalize(to);
+                continue;
+            }
+            let bare = strip_cursor_prefix(&key);
+            if bare != key {
+                key = bare.to_string();
+                continue;
+            }
+            if let Some(next) = strip_effort_suffix(&key) {
+                key = next;
+                continue;
+            }
+            break;
+        }
+        let normalized = normalize(id);
+        let bare = strip_cursor_prefix(&normalized);
+        if bare != normalized {
+            if let Some(next) = strip_effort_suffix(bare) {
+                return next;
+            }
+            return bare.to_string();
+        }
+        id.to_string()
+    }
+
+    fn resolve(&self, model_id: &str) -> Option<String> {
+        let raw = model_id.trim();
+        if is_auto_id(raw) {
+            return None;
         }
         let mut key = normalize(raw);
         for _ in 0..8 {
             if self.prices.contains_key(&key) {
-                return Some((key, fell_back));
+                return Some(key);
             }
             if let Some(canon) = self.aliases.get(&key) {
                 if self.prices.contains_key(canon) {
-                    return Some((canon.clone(), fell_back));
+                    return Some(canon.clone());
                 }
                 key = canon.clone();
                 continue;
             }
             let stripped = strip_cursor_prefix(&key);
             if stripped != key && self.prices.contains_key(stripped) {
-                return Some((stripped.to_string(), fell_back));
+                return Some(stripped.to_string());
             }
             if let Some(next) = strip_effort_suffix(&key) {
                 key = next;
@@ -530,18 +571,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_falls_back_to_grok_list_price() {
+    fn unknown_and_auto_are_unpriced() {
         let (_dir, book) = book("");
-        assert_eq!(book.input_usd_per_mtok("__unknown__"), Some(2.0));
-        assert_eq!(book.avoided_usd("", 1_000_000), Some(2.0));
-        assert_eq!(book.input_usd_per_mtok("default"), Some(2.0));
+        assert_eq!(book.input_usd_per_mtok("__unknown__"), None);
+        assert_eq!(book.avoided_usd("", 1_000_000), None);
+        assert_eq!(book.input_usd_per_mtok("default"), None);
+        assert!(book.quote("auto").is_none());
     }
 
     #[test]
-    fn unknown_uses_default_billing_model() {
+    fn default_billing_model_does_not_invent_unknown_dollars() {
         let (_dir, book) = book("deepseek-v4-flash");
-        assert_eq!(book.input_usd_per_mtok("__unknown__"), Some(0.14));
-        assert_eq!(book.avoided_usd("__unknown__", 1_000_000), Some(0.14));
+        assert_eq!(book.input_usd_per_mtok("__unknown__"), None);
+        assert_eq!(book.avoided_usd("__unknown__", 1_000_000), None);
+        // Named models still resolve.
+        assert_eq!(book.input_usd_per_mtok("deepseek-v4-flash"), Some(0.14));
     }
 
     #[test]
@@ -575,14 +619,21 @@ mod tests {
     }
 
     #[test]
-    fn auto_and_unknown_are_marked_as_estimates() {
+    fn auto_and_unknown_have_no_quote() {
         let (_dir, book) = book("");
         for id in ["default", "__unknown__", "auto", ""] {
-            let quote = book.quote(id).expect(id);
-            assert_eq!(quote.source, PriceSource::Fallback, "{id}");
-            assert!(quote.source.is_estimate(), "{id}");
-            assert_eq!(quote.matched_id, "grok-4.6");
+            assert!(book.quote(id).is_none(), "{id}");
         }
+    }
+
+    #[test]
+    fn display_name_uses_other_and_auto() {
+        assert_eq!(PriceBook::display_name("__unknown__"), "other");
+        assert_eq!(PriceBook::display_name(""), "other");
+        assert_eq!(PriceBook::display_name("default"), "Auto");
+        assert_eq!(PriceBook::display_name("auto"), "Auto");
+        assert_eq!(PriceBook::display_name("grok-4.6"), "Grok 4.6");
+        assert_eq!(PriceBook::display_name("cursor-grok-4.5-high"), "Grok 4.5");
     }
 
     #[test]

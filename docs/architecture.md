@@ -33,18 +33,19 @@ No cloud. No extra API tokens. No LLM summarizer.
 | `ctx-store` | SQLite + BLAKE3 + zstd. mmap blobs, WAL write + r2d2 `query_only` reads, FTS, bloom, snapshots |
 | `ctx-optimizer` | Deterministic reducers (shell / file / mcp / duplicate / CoW) + WASM/command plugins |
 | `ctx-pager` | HOT / WARM / COLD clock + TF-IDF mapped set + prefetch |
-| `ctx-core` | Ingest, hooks, fetch, search |
+| `ctx-core` | Ingest, hooks, fetch, search, L0–L4 spine, canonicalizer, cache economics |
+| `ctx-ledger` | Claude / Codex / Cursor transcript parsers → measured cache turns |
 | `ctx-mcp` | stdio MCP: `ctx_fetch`, `ctx_read`, `ctx_search`, `ctx_inspect`, `ctx_why` |
-| `ctx-telemetry` | `ctx status` / `ctx why` snapshots |
-| `apps/cli` | `ctx` binary, localhost dashboard, `ctx ci` |
+| `ctx-telemetry` | `ctx status` / `ctx why` snapshots + cache-tier USD |
+| `apps/cli` | `ctx` binary, dashboard, `ctx serve` intercept, `ctx ledger`, `ctx proof` |
 
 Adapters convert Claude `PostToolUse` / Cursor `postToolUse` into one `CtxEvent`. Core does not know harness JSON.
 
 ## Store
 
 ```text
-~/.ctx/          (or $CTX_HOME, or ./.ctx if home is not writable)
-  ctx.db         schema v6 — pages, frames, sessions, observations, FTS5
+~/.ctx/          (or $CTX_HOME; unwritable home is an error — set CTX_HOME, never ./.ctx)
+  ctx.db         schema v11 — pages, frames, sessions, observations, FTS5, ledger, epochs, overlays
   store/xx/yy.zst
   config.json
   snapshots/
@@ -62,6 +63,8 @@ Clock totals stay: **HOT** = referenced + recent; **WARM** = referenced or last 
 
 The **mapped page list** is ranked by task tokens (prompt, command, path, frame names), then IDF (rare tokens beat common ones) and fail/error frames. Overlap beats recency. Compiler spans prefetch `ctx://file/…#fn` without inlining the file. `rg`/`find` dumps fold to per-file samples. `ctx_fetch` with a line number opens the enclosing function. A COLD page from yesterday's Claude session can map into today's Cursor session — same store.
 
+MCP stdio is **newline-delimited JSON**. `ctx doctor` runs a live `initialize` + `tools/list` handshake. Large file reads are never denied: if MCP is down, the harness still gets the file.
+
 SessionStart greets with a tiny mapped set. Compact cannot inject Claude `additionalContext` (schema); PreCompact prints a plain-text keep list, and the next UserPromptSubmit remaps. Prompts contribute tokens only — they are never stored as blobs.
 
 ## Optimizers
@@ -77,13 +80,13 @@ SessionStart greets with a tiny mapped set. Compact cannot inject Claude `additi
 
 `config.json` `optimizers` is a list of names (`"shell"`) or `{ "name", "path" }`. Empty = v0 pipeline. Plugins-only appends on top of v0. ABI example: `adapters/optimizer/identity.wat`.
 
-Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are denied and routed to `ctx_read`.
+Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are allowed (fail-open); use `ctx_read` when MCP is up.
 
 ## Harnesses
 
 **Claude Code:** `updatedToolOutput` replaces what the model sees. Shell, Read, MCP. `UserPromptSubmit` extracts task tokens.
 
-**Cursor / Windsurf / Continue / Copilot / JetBrains / Codex:** MCP stdio `ctx mcp`. Cursor also rewrites shell to `ctx exec --shell -- '…'`. Native file/shell cannot be replaced in-place; large reads deny + `ctx_read`.
+**Cursor / Windsurf / Continue / Copilot / JetBrains / Codex:** MCP stdio `ctx mcp` (NDJSON). Cursor also rewrites shell to `ctx exec --shell -- '…'`. Native file/shell cannot be replaced in-place; large reads stay allowed so a dead page-fault path cannot brick the session.
 
 **Aider:** `ctx setup aider` writes `~/.ctx/bin/aider-ctx` → `ctx exec -- aider`.
 
@@ -91,7 +94,9 @@ Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are den
 
 ## Dashboard and ops
 
-`ctx app` is a localhost SPA on `127.0.0.1:8741`: avoided-token KPIs, 7-day trend, optimizer split, HOT/WARM/COLD, config, pause/resume/snapshot. `/metrics` is Prometheus text.
+`ctx app` is a localhost SPA on `127.0.0.1:8741`: avoided-token KPIs (estimated), 实测账本 (measured cache read/write/hit from `ctx ledger --sync`), 7-day trend, optimizer split. `/metrics` is Prometheus text.
+
+`ctx serve` is the intercept plane: canonicalize the request, freeze L0/L1, optionally replace tools with the five CTX capability tools, then forward. Hook-mode cannot freeze provider tool schemas.
 
 `ctx snapshot` checkpoints SQLite. `ctx version pin|use|rollback` keeps copies under `~/.ctx/versions/`. `ctx uninstall --purge --yes` strips hooks and archives `~/.ctx`.
 

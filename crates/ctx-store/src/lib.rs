@@ -9,16 +9,19 @@ mod cache;
 mod compress;
 mod db;
 mod error;
+mod ledger;
 mod metrics;
 mod observe;
 mod paths;
 mod pool;
 
 pub use blob::{
-    blake3_hex, hamming_distance, normalize_for_simhash, normalize_hash, simhash64, simhash_bands,
+    blake3_hex, digit_runs, digit_runs_differ, hamming_distance, normalize_for_simhash,
+    normalize_hash, simhash64, simhash_bands,
 };
 pub use cache::{decode_blob_file, prefetch_blobs, stats as cache_stats};
 pub use error::StoreError;
+pub use ledger::{CacheTotals, EpochRow, LedgerTurn, OverlayRow, WorkspaceSnapshotRow};
 pub use observe::{hook_latency_ms, record_hook, record_page_fault};
 pub use paths::{CtxPaths, DEFAULT_HOME_ENV};
 
@@ -1393,7 +1396,7 @@ fn write_page(tx: &rusqlite::Transaction<'_>, page: RecordPage<'_>) -> Result<()
     Ok(())
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1863,7 +1866,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(model, "");
-        assert_eq!(version, "10");
+        assert_eq!(version, "12");
 
         // v8 attributes calls per observation; legacy rows inherit the session.
         conn.execute(

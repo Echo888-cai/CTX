@@ -35,7 +35,7 @@ pub fn init() -> anyhow::Result<()> {
     println!("  {}  Continue.dev", mark(cont));
     println!("  {}  JetBrains", mark(jetbrains));
     println!("  {}  Aider", mark(aider));
-    println!("  {}  Codex", mark(codex));
+    println!("  {}  ChatGPT", mark(codex));
     println!();
 
     if claude {
@@ -73,7 +73,7 @@ pub fn init() -> anyhow::Result<()> {
     }
     if codex {
         setup_codex()?;
-        println!("  ✓  Codex        mcp");
+        println!("  ✓  ChatGPT      hooks");
     }
     if !claude && !claude_desktop && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
         println!("  ·  none — later: ctx setup claude, cursor, windsurf, vscode, continue, jetbrains, aider, or codex");
@@ -128,9 +128,9 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
             setup_aider()?;
             Ok(())
         }
-        "codex" => {
+        "codex" | "chatgpt" => {
             setup_codex()?;
-            println!("Codex MCP installed. Restart Codex Desktop / CLI.");
+            println!("ChatGPT hooks + MCP installed. Restart ChatGPT / Codex CLI.");
             Ok(())
         }
         "copilot" => {
@@ -155,7 +155,7 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
         "wizard" => wizard(),
         other => {
             anyhow::bail!(
-                "unknown target {other:?} (use claude, claude-desktop, cursor, windsurf, vscode, continue, jetbrains, aider, copilot, codex, all, or wizard)"
+                "unknown target {other:?} (use claude, claude-desktop, cursor, windsurf, vscode, continue, jetbrains, aider, copilot, chatgpt, all, or wizard)"
             )
         }
     }
@@ -186,7 +186,7 @@ pub fn wizard() -> anyhow::Result<()> {
     println!("  {}  Continue.dev", mark(cont));
     println!("  {}  JetBrains", mark(jetbrains));
     println!("  {}  Aider", mark(aider));
-    println!("  {}  Codex", mark(codex));
+    println!("  {}  ChatGPT", mark(codex));
 
     let interactive = io::stdin().is_terminal();
     let strategy = if interactive {
@@ -264,7 +264,7 @@ pub fn wizard() -> anyhow::Result<()> {
     }
     if codex {
         let _ = setup_codex();
-        println!("  ✓  Codex");
+        println!("  ✓  ChatGPT");
     }
     if !claude && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
         println!("  ·  none — later: ctx setup all");
@@ -618,21 +618,32 @@ fn setup_codex() -> anyhow::Result<()> {
     let home = dirs::home_dir().context("home directory")?;
     let dir = home.join(".codex");
     fs::create_dir_all(&dir).ok();
+
+    // Hooks (Desktop + CLI) — same Claude-style matcher groups Codex reads.
+    let hooks_path = dir.join("hooks.json");
+    let mut hooks = read_json_object(&hooks_path)?;
+    merge_claude_hooks(&mut hooks, &hook_cmd())
+        .with_context(|| format!("merge hooks in {}", hooks_path.display()))?;
+    write_json_atomic(&hooks_path, &hooks)?;
+    println!("Installed ChatGPT hooks → {}", hooks_path.display());
+
+    // MCP remains available for on-demand fetch.
     let path = dir.join("config.toml");
     let mut text = fs::read_to_string(&path).unwrap_or_default();
     if text.contains("[mcp_servers.ctx]") {
-        println!("Codex already has ctx MCP → {}", path.display());
-        return Ok(());
+        println!("ChatGPT already has ctx MCP → {}", path.display());
+    } else {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        let bin = ctx_bin().replace('\\', "\\\\").replace('"', "\\\"");
+        text.push_str(&format!(
+            "\n[mcp_servers.ctx]\ncommand = \"{bin}\"\nargs = [\"mcp\"]\n"
+        ));
+        fs::write(&path, text)?;
+        println!("Installed ChatGPT MCP → {}", path.display());
     }
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    let bin = ctx_bin().replace('\\', "\\\\").replace('"', "\\\"");
-    text.push_str(&format!(
-        "\n[mcp_servers.ctx]\ncommand = \"{bin}\"\nargs = [\"mcp\"]\n"
-    ));
-    fs::write(&path, text)?;
-    println!("Installed Codex MCP → {}", path.display());
+    println!("Restart ChatGPT / Codex CLI, then /hooks to trust CTX if prompted.");
     Ok(())
 }
 

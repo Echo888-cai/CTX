@@ -6,6 +6,7 @@ members = [
     "crates/ctx-optimizer",
     "crates/ctx-pager",
     "crates/ctx-telemetry",
+    "crates/ctx-ledger",
     "crates/ctx-core",
     "crates/ctx-mcp",
     "apps/cli",
@@ -26,6 +27,7 @@ anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 ctx-core = { path = "crates/ctx-core" }
+ctx-ledger = { path = "crates/ctx-ledger" }
 ctx-mcp = { path = "crates/ctx-mcp" }
 ctx-optimizer = { path = "crates/ctx-optimizer" }
 ctx-pager = { path = "crates/ctx-pager" }
@@ -42,7 +44,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zstd = "0.13"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "process"] }
 memmap2 = "0.9"
 
 [profile.release]

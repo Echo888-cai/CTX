@@ -11,48 +11,79 @@ struct PopoverView: View {
     private let ink = Color(hex: 0x111311)
     private let muted = Color(hex: 0x6E736F)
     private let quiet = Color(hex: 0x979C98)
-    private let line = Color(hex: 0xE4E7E4)
-    private let wash = Color(hex: 0xF8F9F8)
+    private let line = Color(hex: 0xE8EBE8)
+    private let wash = Color(hex: 0xF6F7F6)
+    private let paper = Color(hex: 0xFBFCFB)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider().overlay(line)
+            softRule
             overview
-            Divider().overlay(line)
+            softRule
             toolsList
-            Divider().overlay(line)
+            softRule
             actions
-            Divider().overlay(line)
+            softRule
             footer
         }
         .frame(width: 336)
-        .background(Color.white)
+        .background(
+            ZStack {
+                paper
+                LinearGradient(
+                    colors: [Color.white.opacity(0.9), wash.opacity(0.55)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        )
         .foregroundStyle(ink)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(line, lineWidth: 1)
+        )
+    }
+
+    private var softRule: some View {
+        Rectangle()
+            .fill(line.opacity(0.9))
+            .frame(height: 1)
+            .padding(.horizontal, 2)
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Image(nsImage: brandImage)
                 .resizable()
                 .interpolation(.high)
                 .scaledToFit()
-                .frame(width: 92, height: 28)
+                .frame(width: 88, height: 24)
                 .accessibilityLabel("CTX")
             Text("让重要的，自然抵达。")
-                .font(.system(size: 11))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(muted)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            Circle()
-                .fill(model.enabled ? green : quiet)
-                .frame(width: 9, height: 9)
-            Text(model.enabled ? "运行中" : "已暂停")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(model.enabled ? green : muted)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.enabled ? green : quiet)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: model.enabled ? green.opacity(0.35) : .clear, radius: 3, y: 0)
+                Text(model.enabled ? "运行中" : "已暂停")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(model.enabled ? green : muted)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(model.enabled ? green.opacity(0.08) : wash)
+            )
         }
-        .padding(.horizontal, 20)
-        .frame(height: 69)
+        .padding(.horizontal, 18)
+        .frame(height: 64)
     }
 
     private var overview: some View {
@@ -60,19 +91,19 @@ struct PopoverView: View {
             HStack(alignment: .top) {
                 HStack(alignment: .lastTextBaseline, spacing: 2) {
                     Text("\(model.today.reductionPct)")
-                        .font(.system(size: 56, weight: .medium))
+                        .font(.system(size: 52, weight: .semibold, design: .rounded))
                     Text("%")
-                        .font(.system(size: 27, weight: .medium))
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
                 }
                 .foregroundStyle(green)
                 .monospacedDigit()
 
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 6) {
+                VStack(alignment: .trailing, spacing: 5) {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Text(model.usdLabel)
-                            .font(.system(size: 31, weight: .medium))
+                            .font(.system(size: 28, weight: .semibold, design: .rounded))
                             .foregroundStyle(green)
                             .monospacedDigit()
                         if model.avoidedUsdEstimated {
@@ -80,22 +111,24 @@ struct PopoverView: View {
                         }
                     }
                     Text("今日已节省")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(muted)
                 }
-                .padding(.top, 6)
+                .padding(.top, 4)
             }
 
             Text(model.avoidedLabel)
-                .font(.system(size: 29, weight: .medium))
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
                 .foregroundStyle(green)
                 .monospacedDigit()
-                .padding(.top, 37)
+                .padding(.top, 28)
             Text("今日已节省 tokens")
-                .font(.system(size: 13))
-                .padding(.top, 1)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(muted)
+                .padding(.top, 2)
 
             composition
-                .padding(.top, 17)
+                .padding(.top, 16)
 
             if let error = model.error {
                 Text(error)
@@ -105,20 +138,20 @@ struct PopoverView: View {
                     .padding(.top, 10)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 27)
-        .padding(.bottom, 21)
+        .padding(.horizontal, 18)
+        .padding(.top, 22)
+        .padding(.bottom, 18)
     }
 
     private var toolsList: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("工具")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(muted)
                 .padding(.bottom, 8)
 
             if model.tools.isEmpty {
-                Text("打开设置接入 Cursor、Claude Code 或 Codex")
+                Text("打开设置接入 Cursor、Claude Code 或 ChatGPT")
                     .font(.system(size: 13))
                     .foregroundStyle(quiet)
                     .frame(minHeight: 36)
@@ -127,14 +160,14 @@ struct PopoverView: View {
                     HStack(spacing: 10) {
                         Circle()
                             .fill(toolDot(tool))
-                            .frame(width: 8, height: 8)
+                            .frame(width: 7, height: 7)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 8) {
                                 Text(tool.name)
                                     .font(.system(size: 14, weight: .semibold))
                                 if !tool.formLabel.isEmpty {
                                     Text(tool.formLabel)
-                                        .font(.system(size: 11))
+                                        .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(quiet)
                                 }
                             }
@@ -144,12 +177,12 @@ struct PopoverView: View {
                         }
                         Spacer(minLength: 8)
                     }
-                    .frame(minHeight: 44)
+                    .frame(minHeight: 42)
                 }
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
     }
 
     private func toolDot(_ tool: ToolRow) -> Color {
@@ -158,8 +191,6 @@ struct PopoverView: View {
         return green
     }
 
-    /// Same reading as the dashboard: one bar for today's raw context, the
-    /// green head being what actually reached the model.
     private var composition: some View {
         let rows = model.compositionSegments
         let total = max(1, rows.reduce(0) { $0 + $1.tokens })
@@ -178,7 +209,7 @@ struct PopoverView: View {
                     }
                 }
             }
-            .frame(height: 10)
+            .frame(height: 9)
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(Array(rows.prefix(4).enumerated()), id: \.element.id) { index, row in
                     HStack(spacing: 8) {
@@ -199,13 +230,21 @@ struct PopoverView: View {
                 }
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(wash))
+        .padding(13)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.72))
+                .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(line, lineWidth: 1)
+        )
     }
 
     private var estimateBadge: some View {
         Text("估")
-            .font(.system(size: 10))
+            .font(.system(size: 10, weight: .medium))
             .foregroundStyle(muted)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -221,7 +260,7 @@ struct PopoverView: View {
     }
 
     private var actions: some View {
-        VStack(spacing: 11) {
+        VStack(spacing: 10) {
             Button {
                 model.openDashboard()
             } label: {
@@ -233,7 +272,7 @@ struct PopoverView: View {
             Button {
                 model.setEnabled(!model.enabled)
             } label: {
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Image(systemName: model.enabled ? "pause.fill" : "play.fill")
                     Text(model.enabled ? "暂停" : "继续")
                 }
@@ -241,8 +280,8 @@ struct PopoverView: View {
             }
             .buttonStyle(CTXButtonStyle(emphasis: false))
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
     }
 
     private var footer: some View {
@@ -252,16 +291,17 @@ struct PopoverView: View {
                 set: { model.toggleLogin($0) }
             ))
             .toggleStyle(.checkbox)
-            .font(.system(size: 12))
+            .font(.system(size: 12, weight: .medium))
 
             Spacer()
 
             Button("退出 CTX") { model.quit() }
                 .buttonStyle(.plain)
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(muted)
         }
-        .padding(.horizontal, 20)
-        .frame(height: 62)
+        .padding(.horizontal, 18)
+        .frame(height: 54)
     }
 
     private var brandImage: NSImage {
@@ -269,11 +309,13 @@ struct PopoverView: View {
            let image = NSImage(contentsOfFile: previewPath) {
             return image
         }
-        guard let url = Bundle.main.url(forResource: "ctx-wordmark", withExtension: "png"),
-              let image = NSImage(contentsOf: url) else {
-            return NSImage(size: NSSize(width: 760, height: 220))
+        for name in ["ctx-wordmark", "ctx-menubar"] {
+            if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                return image
+            }
         }
-        return image
+        return NSImage(size: NSSize(width: 760, height: 220))
     }
 }
 
@@ -282,18 +324,25 @@ private struct CTXButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .medium))
-            .frame(height: 55)
+            .font(.system(size: 14, weight: .semibold))
+            .frame(height: 48)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(emphasis ? Color.black : Color.white)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(emphasis ? Color.black : Color.white.opacity(0.88))
+                    .shadow(
+                        color: emphasis ? Color.black.opacity(0.18) : Color.black.opacity(0.04),
+                        radius: emphasis ? 10 : 6,
+                        y: emphasis ? 3 : 1
+                    )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(emphasis ? Color.black : Color(hex: 0xDFE2DF), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(emphasis ? Color.black : Color(hex: 0xE0E3E0), lineWidth: 1)
             )
             .foregroundStyle(emphasis ? Color.white : Color(hex: 0x111311))
-            .opacity(configuration.isPressed ? 0.72 : 1)
+            .opacity(configuration.isPressed ? 0.78 : 1)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

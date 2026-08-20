@@ -6,8 +6,8 @@ use ctx_optimizer::{
 use ctx_pager::{extract_task, merge_tokens, parse_task, SemanticRanker, TfIdfRanker, WorkingSet};
 use ctx_protocol::{CtxEvent, CtxUri, EventKind, Frame, ToolKind};
 use ctx_store::{
-    blake3_hex, normalize_hash, simhash64, FileReadRecord, NewObservation, PutBlob, RecordPage,
-    Store,
+    blake3_hex, digit_runs_differ, normalize_hash, simhash64, FileReadRecord, NewObservation,
+    PutBlob, RecordPage, Store,
 };
 
 use crate::config::Config;
@@ -62,14 +62,46 @@ impl Runtime {
     }
 
     pub fn open_default() -> ctx_store::Result<Self> {
-        let store = Store::open_default()?;
-        if store.paths().fallback {
-            tracing::info!(
-                path = %store.paths().root().display(),
-                "CTX store: home not writable, using workspace .ctx"
-            );
+        Ok(Self::open(Store::open_default()?))
+    }
+
+    fn open_epoch_for(&self, event: &CtxEvent) -> ctx_store::Result<ctx_store::EpochRow> {
+        let cwd = event
+            .metadata
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(std::path::Path::new);
+        let (snap_id, n, manifest) = crate::overlay::capture(cwd);
+        let _ = self.store.put_workspace_snapshot(&snap_id, n, &manifest);
+        let model = event
+            .metadata
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let tools = crate::capability::tools_hash();
+        let prefix = crate::canonical::prefix_hash(&[
+            crate::capability::protocol_text(),
+            &snap_id,
+            &tools,
+        ]);
+        let row = self.store.ensure_epoch(
+            &event.session,
+            model,
+            "",
+            &tools,
+            crate::capability::PROTOCOL_VERSION,
+            &snap_id,
+            &prefix,
+        )?;
+        if self
+            .store
+            .journal_text(&event.session, row.epoch)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            let _ = self.store.push_journal(&event.session, "epoch", &snap_id);
         }
-        Ok(Self::open(store))
+        Ok(row)
     }
 
     pub fn is_harness_disabled(&self, harness: ctx_protocol::Harness) -> bool {
@@ -86,8 +118,9 @@ impl Runtime {
 
         match event.event {
             EventKind::SessionStart => {
+                let _ = self.open_epoch_for(&event);
                 return Ok(passthrough(
-                    mapped_greeting(&self.store, &event, 120, 6)?,
+                    mapped_greeting(&self.store, &event, 160, 6)?,
                     0,
                 ));
             }
@@ -212,6 +245,15 @@ impl Runtime {
                 let chunks = chunk_text(&event.payload);
                 let chunks_json = serde_json::to_value(&chunks).unwrap_or_else(|_| serde_json::json!([]));
                 if let Some(prev) = self.store.get_file_read(path)? {
+                    if prev.content_hash != hash {
+                        let _ = self.store.push_overlay(
+                            &event.session,
+                            path,
+                            &prev.content_hash,
+                            &hash,
+                        );
+                        let _ = self.store.push_journal(&event.session, "overlay", path);
+                    }
                     if prev.content_hash == hash && raw_tokens >= 80 {
                         if let Some(obj) = metadata.as_object_mut() {
                             obj.insert("unchanged".into(), serde_json::Value::Bool(true));
@@ -316,41 +358,26 @@ impl Runtime {
         };
 
         if let Some(hit) = hit {
-        if hit.count >= 2 && raw_tokens >= 80 {
-            let ref_uri = hit.uri.unwrap_or_else(|| uri.to_string());
-            let text = if hit.near {
-                DuplicateGuard::render_near(
-                    &ref_uri,
-                    hit.count,
-                    kind_str,
-                    event.tool.as_ref().map(|t| t.name.as_str()),
-                    Some(hit.hamming),
-                )
-            } else {
-                DuplicateGuard::render(
-                    &ref_uri,
-                    hit.count,
-                    kind_str,
-                    event.tool.as_ref().map(|t| t.name.as_str()),
-                )
-            };
-            return self.finish(
-                Finish {
-                    event: &event,
-                    kind: kind_str,
-                    hash: &hash,
-                    uri: Some(uri.page_key()),
-                    delivered: text,
-                    optimizer: Some("duplicate"),
-                    replaced: true,
-                    raw_tokens,
-                },
-                put.as_ref(),
-                &uri,
-                &frames,
-                &task_s,
-            );
-        }
+            if hit.count >= 2 && raw_tokens >= 80 {
+                if let Some(text) = self.duplicate_stub(&hit, &uri.to_string(), kind_str, &event) {
+                    return self.finish(
+                        Finish {
+                            event: &event,
+                            kind: kind_str,
+                            hash: &hash,
+                            uri: Some(uri.page_key()),
+                            delivered: text,
+                            optimizer: Some("duplicate"),
+                            replaced: true,
+                            raw_tokens,
+                        },
+                        put.as_ref(),
+                        &uri,
+                        &frames,
+                        &task_s,
+                    );
+                }
+            }
         }
 
         if raw_tokens < self.config.virtualize_threshold_tokens {
@@ -381,9 +408,18 @@ impl Runtime {
         };
 
         if let Some(out) = self.pipeline.run(&input) {
+            let mut text = out.text;
+            if kind_str == "shell" && raw_tokens >= 400 {
+                let pack = crate::evidence_pack(&event.payload, out.delivered_tokens.max(240));
+                if crate::estimate_tokens(&pack) + MIN_GAIN_TOKENS < raw_tokens
+                    && crate::estimate_tokens(&pack) < crate::estimate_tokens(&text)
+                {
+                    text = pack;
+                }
+            }
             let delivery = if out.duplicate_of.is_some() {
                 Delivery {
-                    text: out.text,
+                    text,
                     cow: false,
                 }
             } else {
@@ -393,7 +429,7 @@ impl Runtime {
                     &uri,
                     &hash,
                     raw_tokens,
-                    out.text,
+                    text,
                     out.delivered_tokens,
                     out.optimizer,
                     &frames,
@@ -905,6 +941,38 @@ impl Runtime {
             self.config.near_duplicate_hamming,
         )
     }
+
+    /// Exact / whitespace dups collapse. Near-dups that change digit runs
+    /// (status codes, assertion values) must not — that is signal.
+    fn duplicate_stub(
+        &self,
+        hit: &ctx_store::FingerprintHit,
+        uri: &str,
+        kind: &str,
+        event: &CtxEvent,
+    ) -> Option<String> {
+        let ref_uri = hit.uri.clone().unwrap_or_else(|| uri.to_string());
+        let tool = event.tool.as_ref().map(|t| t.name.as_str());
+        if !hit.near {
+            return Some(DuplicateGuard::render(&ref_uri, hit.count, kind, tool));
+        }
+        let Ok(bytes) = self.store.get_bytes(&hit.hash) else {
+            return None;
+        };
+        let prev = String::from_utf8_lossy(&bytes);
+        if digit_runs_differ(&prev, &event.payload) {
+            return None;
+        }
+        let delta = DuplicateGuard::brief_delta(&prev, &event.payload, 6);
+        Some(DuplicateGuard::render_near(
+            &ref_uri,
+            hit.count,
+            kind,
+            tool,
+            Some(hit.hamming),
+            Some(delta.as_str()).filter(|s| !s.is_empty()),
+        ))
+    }
 }
 
 fn enclosing_symbol(frames: &[Frame], line: u32) -> Option<String> {
@@ -983,7 +1051,19 @@ fn mapped_greeting(
         .unwrap_or("");
     let extra = extract_task(&[base]);
     let ws = WorkingSet::query(store, Some(&event.session), &extra)?;
-    Ok(trim_greeting(&ws, budget, pages))
+    let mut greet = trim_greeting(&ws, budget, pages);
+    if let Ok(Some(ep)) = store.current_epoch(&event.session) {
+        greet = format!(
+            "{greet}\nEpoch {}  BASE {}\n",
+            ep.epoch,
+            if ep.workspace_snapshot.is_empty() {
+                "—"
+            } else {
+                &ep.workspace_snapshot
+            }
+        );
+    }
+    Ok(greet)
 }
 
 fn trim_greeting(ws: &WorkingSet, budget: u32, pages: usize) -> String {
@@ -1431,21 +1511,20 @@ mod tests {
     }
 
     #[test]
-    fn near_duplicate_shell_output_collapses() {
+    fn default_near_duplicate_keeps_status_code_changes() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
         let rt = Runtime::open(store);
+        assert_eq!(rt.config.near_duplicate_hamming, 0);
         let a = "error: boom\nleft: 401\nright: 200\n".repeat(40);
         let b = a.replace("401", "402");
-        let first = rt
-            .ingest(CtxEvent::tool_output(
-                "s-near",
-                Harness::ClaudeCode,
-                ToolRef::new("Bash"),
-                a,
-            ))
-            .unwrap();
-        assert!(first.raw_tokens >= 80);
+        rt.ingest(CtxEvent::tool_output(
+            "s-near",
+            Harness::ClaudeCode,
+            ToolRef::new("Bash"),
+            a,
+        ))
+        .unwrap();
         let second = rt
             .ingest(CtxEvent::tool_output(
                 "s-near",
@@ -1454,7 +1533,134 @@ mod tests {
                 b,
             ))
             .unwrap();
+        assert_ne!(
+            second.optimizer.as_deref(),
+            Some("duplicate"),
+            "{}",
+            second.delivered
+        );
+        assert!(second.delivered.contains("402"), "{}", second.delivered);
+    }
+
+    #[test]
+    fn simhash_near_duplicate_with_digit_change_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let mut rt = Runtime::open(store);
+        rt.config.near_duplicate_hamming = 3;
+        let a = "error: boom\nleft: 401\nright: 200\n".repeat(40);
+        let b = a.replace("401", "402");
+        rt.ingest(CtxEvent::tool_output(
+            "s-near-h",
+            Harness::ClaudeCode,
+            ToolRef::new("Bash"),
+            a,
+        ))
+        .unwrap();
+        let second = rt
+            .ingest(CtxEvent::tool_output(
+                "s-near-h",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                b,
+            ))
+            .unwrap();
+        assert_ne!(
+            second.optimizer.as_deref(),
+            Some("duplicate"),
+            "digit-run changes must not collapse:\n{}",
+            second.delivered
+        );
+    }
+
+    #[test]
+    fn exact_duplicate_still_collapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        let payload = "error: boom\nleft: 401\nright: 200\n".repeat(40);
+        rt.ingest(CtxEvent::tool_output(
+            "s-exact",
+            Harness::ClaudeCode,
+            ToolRef::new("Bash"),
+            payload.clone(),
+        ))
+        .unwrap();
+        let second = rt
+            .ingest(CtxEvent::tool_output(
+                "s-exact",
+                Harness::ClaudeCode,
+                ToolRef::new("Bash"),
+                payload,
+            ))
+            .unwrap();
         assert_eq!(second.optimizer.as_deref(), Some("duplicate"), "{}", second.delivered);
         assert!(second.delivered.contains("dup"), "{}", second.delivered);
+    }
+
+    #[test]
+    fn session_start_opens_epoch_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        rt.ingest(CtxEvent {
+            event: EventKind::SessionStart,
+            session: "s-ep".into(),
+            harness: Harness::ClaudeCode,
+            tool: None,
+            payload: String::new(),
+            task_context: None,
+            metadata: serde_json::json!({"model": "claude-sonnet-4"}),
+        })
+        .unwrap();
+        let ep = rt.store.current_epoch("s-ep").unwrap().expect("epoch");
+        assert_eq!(ep.epoch, 1);
+        assert_eq!(ep.model, "claude-sonnet-4");
+    }
+
+    #[test]
+    fn file_hash_change_appends_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        let rt = Runtime::open(store);
+        rt.ingest(CtxEvent {
+            event: EventKind::SessionStart,
+            session: "s-ov".into(),
+            harness: Harness::ClaudeCode,
+            tool: None,
+            payload: String::new(),
+            task_context: None,
+            metadata: serde_json::json!({}),
+        })
+        .unwrap();
+        let mut src = String::from("fn a() { 1 }\n");
+        for i in 0..40 {
+            src.push_str(&format!("fn n{i}() {{ {i} }}\n"));
+        }
+        rt.ingest(CtxEvent {
+            event: EventKind::FileRead,
+            session: "s-ov".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Read")),
+            payload: src.clone(),
+            task_context: None,
+            metadata: serde_json::json!({"path": "src/a.rs"}),
+        })
+        .unwrap();
+        src.push_str("fn changed() { 9 }\n");
+        rt.ingest(CtxEvent {
+            event: EventKind::FileRead,
+            session: "s-ov".into(),
+            harness: Harness::ClaudeCode,
+            tool: Some(ToolRef::new("Read")),
+            payload: src,
+            task_context: None,
+            metadata: serde_json::json!({"path": "src/a.rs"}),
+        })
+        .unwrap();
+        let rows = rt.store.overlays_for("s-ov", 1).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].path, "src/a.rs");
+        assert_ne!(rows[0].prev_hash, rows[0].new_hash);
     }
 }

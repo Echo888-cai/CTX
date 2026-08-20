@@ -1,9 +1,10 @@
-use ctx_core::{parse_task, Runtime, WorkingSet};
+use ctx_core::{parse_task, render_spine, Runtime, WorkingSet};
 
 pub fn run(session: Option<&str>, task: Option<&str>, json: bool) -> anyhow::Result<()> {
     let rt = Runtime::open_default()?;
     let extra = task.map(parse_task).unwrap_or_default();
     let ws = WorkingSet::query(&rt.store, session, &extra)?;
+    let epoch = render_spine(&rt.store, session);
     if json {
         let pages: Vec<serde_json::Value> = ws
             .recent_pages
@@ -24,11 +25,15 @@ pub fn run(session: Option<&str>, task: Option<&str>, json: bool) -> anyhow::Res
             serde_json::json!({
                 "task": ws.task,
                 "pages": pages,
+                "epoch": epoch,
             })
         );
         return Ok(());
     }
     println!("{}", ws.render());
+    if !epoch.is_empty() {
+        println!("{epoch}");
+    }
     Ok(())
 }
 

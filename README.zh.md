@@ -32,6 +32,8 @@ CTX 是 **无损虚拟化**：
 1. **原文不可变。** 存储里的字节从不被改写。
 2. **每一次削减都可逆。** `ctx://shell/abc#auth::login` 走页表，不是猜。
 
+升级路径（缓存稳定前缀、真实账本、拦截平面）见 [docs/plan/cache-stable-runtime.md](docs/plan/cache-stable-runtime.md)。
+
 无云、无额外 API token、不用 LLM 做摘要。Rust，本地 SQLite + BLAKE3 + zstd。
 
 ## 安装
@@ -122,7 +124,7 @@ ctx://shell/9ba72f3c#auth::login  18241→412
 | | |
 |---|---|
 | **Claude Code** | 原地替换工具输出（`updatedToolOutput`）。 |
-| **Cursor** | shell 改写成 `ctx exec`。MCP 输出可替换。大文件 → `ctx_read`。 |
+| **Cursor** | shell 改写成 `ctx exec`。MCP 输出可替换。大文件保持可读（fail-open）。 |
 | **Windsurf** | MCP，形状同 Cursor。 |
 | **VS Code / Copilot** | 扩展 + 用户/工作区 MCP。状态栏显示少进模型的 token。 |
 | **Continue.dev** | `~/.continue/mcpServers/ctx.yaml` |

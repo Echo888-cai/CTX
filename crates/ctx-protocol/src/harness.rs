@@ -40,7 +40,7 @@ impl Harness {
             "continue" | "Continue" => Self::Continue,
             "jetbrains" | "JetBrains" | "idea" | "goland" | "pycharm" => Self::JetBrains,
             "aider" | "Aider" => Self::Aider,
-            "codex" | "openai-codex" | "Codex" => Self::Codex,
+            "codex" | "openai-codex" | "Codex" | "chatgpt" | "ChatGPT" => Self::Codex,
             "copilot" | "github-copilot" | "Copilot" => Self::Copilot,
             _ => Self::Unknown,
         }

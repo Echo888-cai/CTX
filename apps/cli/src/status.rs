@@ -1,6 +1,6 @@
 use ctx_core::{
-    catalog_json, fmt_compact, start_of_today, Config, CtxPaths, PriceBook, Runtime, Snapshot,
-    Store,
+    catalog_json, compact_advise, fmt_compact, start_of_today, Config, CtxPaths, PriceBook,
+    Runtime, Snapshot, Store,
 };
 use serde_json::{json, Value};
 
@@ -96,6 +96,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
                 .source_harnesses
                 .iter()
                 .map(|harness| harness_label(harness))
+                .filter(|label| !label.is_empty())
                 .collect::<Vec<_>>();
             with_price(
                 &book,
@@ -117,21 +118,9 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
     let model_options = all_models
         .iter()
         .map(|m| {
-            let name = m["name"].as_str().unwrap_or("");
-            let sources = m["source_harnesses"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>();
-            let option_name = if m["id"] == "__unknown__" && !sources.is_empty() {
-                format!("{name}（{}）", sources.join(" · "))
-            } else {
-                name.to_string()
-            };
             json!({
                 "id": m["id"],
-                "name": option_name,
+                "name": m["name"],
                 "source_harnesses": m["source_harnesses"],
             })
         })
@@ -209,7 +198,55 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "reasons": optimizer_rows(&rt.store, since),
         "recent": feed_rows(&rt.store),
         "snapshots": snapshot_rows(&rt.store),
+        "ledger": ledger_json(&rt.store, since, &book),
+        "epochs": rt.store.epoch_count().unwrap_or(0),
+        "overlays": rt.store.overlay_count().unwrap_or(0),
     }))
+}
+
+fn ledger_json(store: &Store, since: i64, book: &PriceBook) -> Value {
+    let totals = store.ledger_totals_since(since).unwrap_or_default();
+    let turns = store.ledger_since(since).unwrap_or_default();
+    let usd = book.turns_usd(&turns);
+    let advice = compact_advise(&turns, 3, book);
+    let avoided_compact = ctx_core::avoided_compact_usd(&turns, book);
+    let (faults, recalled) = store.refetch_totals_since(since).unwrap_or((0, 0));
+    let miss_turns = turns.iter().filter(|t| t.cache_read_tokens == 0).count();
+    let miss_tokens: i64 = turns.iter().map(|t| {
+        if t.cache_read_tokens == 0 {
+            t.uncached_input()
+        } else {
+            0
+        }
+    }).sum();
+    let passed = store.clean_sessions_since(since).unwrap_or(0);
+    json!({
+        "kind": if totals.turns == 0 { "empty" } else { "measured" },
+        "turns": totals.turns,
+        "input_tokens": totals.input_tokens,
+        "output_tokens": totals.output_tokens,
+        "cache_read_tokens": totals.cache_read_tokens,
+        "cache_write_tokens": totals.cache_write_tokens,
+        "cache_miss_turns": miss_turns,
+        "cache_miss_tokens": miss_tokens,
+        "reasoning_tokens": totals.reasoning_tokens,
+        "compact_events": totals.compact_events,
+        "avoided_compact_usd": avoided_compact,
+        "hit_rate": advice.hit_rate,
+        "usd": usd,
+        "plan_type": totals.plan_type,
+        "quota_used_pct": totals.quota_used_pct,
+        "resets_at": turns.iter().rev().find(|t| !t.resets_at.is_empty()).map(|t| t.resets_at.clone()).unwrap_or_default(),
+        "page_faults": faults,
+        "recalled_tokens": recalled,
+        "retries": faults,
+        "task_passed": passed,
+        "advice": {
+            "keep_cache": advice.keep_cache,
+            "reason": advice.reason,
+            "cache_dead": advice.cache_dead,
+        }
+    })
 }
 
 /// One bar: what actually reached the model, then why the rest did not.
@@ -309,22 +346,14 @@ fn harness_label(id: &str) -> String {
     match id {
         "cursor" => "Cursor".into(),
         "claude" | "claude-code" => "Claude Code".into(),
-        "unknown" | "" => "其他".into(),
+        "codex" | "chatgpt" | "openai-codex" => "ChatGPT".into(),
+        "unknown" | "" => String::new(),
         other => other.to_string(),
     }
 }
 
 fn model_label(id: &str) -> String {
-    match id {
-        "__unknown__" | "" => "未上报模型".into(),
-        "default" | "auto" => "Auto（自动选择）".into(),
-        "gpt-5" => "GPT-5".into(),
-        "claude-sonnet-4-6" => "Claude Sonnet 4.6".into(),
-        "claude-opus-4-1" => "Claude Opus 4.1".into(),
-        "gemini-2.5-pro" => "Gemini 2.5 Pro".into(),
-        "deepseek-chat" => "DeepSeek Chat".into(),
-        other => other.to_string(),
-    }
+    PriceBook::display_name(id)
 }
 
 fn now_unix() -> i64 {
@@ -726,30 +755,30 @@ mod tests {
     #[test]
     fn dashboard_model_labels_are_readable_without_guessing() {
         assert_eq!(model_label("gpt-5"), "GPT-5");
-        assert_eq!(model_label("claude-sonnet-4-6"), "Claude Sonnet 4.6");
-        assert_eq!(model_label("claude-opus-4-1"), "Claude Opus 4.1");
-        assert_eq!(model_label("__unknown__"), "未上报模型");
-        assert_eq!(model_label("default"), "Auto（自动选择）");
+        assert_eq!(model_label("claude-sonnet-4-6"), "Claude Sonnet 4");
+        assert_eq!(model_label("claude-opus-4-1"), "Claude Opus 4");
+        assert_eq!(model_label("__unknown__"), "other");
+        assert_eq!(model_label("default"), "Auto");
         assert_eq!(model_label("future-model-x"), "future-model-x");
     }
 
     #[test]
-    fn unknown_model_uses_grok_list_price() {
+    fn unknown_model_is_unpriced() {
         let book = PriceBook::load(
             &CtxPaths::from_root(std::path::PathBuf::from("/tmp/ctx-no-prices")),
             "",
         );
         let row = with_price(&book, json!({"id": "__unknown__", "avoided": 1_000_000u64}));
-        assert_eq!(row["avoided_usd"], 2.0);
-        assert_eq!(row["price_estimate"], true);
+        assert!(row["avoided_usd"].is_null());
+        assert_eq!(row["price_estimate"], false);
         let money = price_summary(&[row]);
-        assert_eq!(money.avoided_usd, json!(2.0));
-        assert!(money.estimated);
-        assert_eq!(money.unpriced_models, 0);
+        assert!(money.avoided_usd.is_null());
+        assert!(!money.estimated);
+        assert_eq!(money.unpriced_models, 1);
     }
 
     #[test]
-    fn quoted_models_do_not_mix_auto_estimates_into_the_kpi() {
+    fn quoted_models_ignore_unpriced_auto_rows_in_the_kpi() {
         let book = PriceBook::load(
             &CtxPaths::from_root(std::path::PathBuf::from("/tmp/ctx-no-prices")),
             "",
@@ -760,11 +789,12 @@ mod tests {
         );
         let auto = with_price(&book, json!({"id": "default", "avoided": 1_000_000u64}));
         assert_eq!(named["price_estimate"], false);
-        assert_eq!(auto["price_estimate"], true);
+        assert!(auto["avoided_usd"].is_null());
         let money = price_summary(&[named, auto]);
         assert_eq!(money.avoided_usd, json!(3.0));
         assert!(!money.estimated);
         assert_eq!(money.priced_models, 1);
+        assert_eq!(money.unpriced_models, 1);
     }
 
     #[test]
