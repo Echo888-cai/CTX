@@ -368,6 +368,7 @@ enum LoginItem {
         let plist = plistURL
         if on {
             let app = Bundle.main.bundleURL.path
+            let binary = Bundle.main.executableURL?.path ?? "\(app)/Contents/MacOS/CTX"
             let body = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -377,12 +378,12 @@ enum LoginItem {
               <string>\(label)</string>
               <key>ProgramArguments</key>
               <array>
-                <string>/usr/bin/open</string>
-                <string>-ga</string>
-                <string>\(app)</string>
+                <string>\(binary)</string>
               </array>
               <key>RunAtLoad</key>
               <true/>
+              <key>KeepAlive</key>
+              <false/>
               <key>LimitLoadToSessionType</key>
               <string>Aqua</string>
             </dict>
@@ -393,10 +394,10 @@ enum LoginItem {
                 withIntermediateDirectories: true
             )
             try body.write(to: plist, atomically: true, encoding: .utf8)
-            _ = try? shell(["launchctl", "unload", plist.path])
-            _ = try shell(["launchctl", "load", "-w", plist.path])
+            // Never unload/bootout while we are running — that kills this process.
         } else {
-            _ = try? shell(["launchctl", "unload", plist.path])
+            // Only remove the login item. Do not bootout: this process may be
+            // the LaunchAgent itself.
             if FileManager.default.fileExists(atPath: plist.path) {
                 try FileManager.default.removeItem(at: plist)
             }

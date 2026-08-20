@@ -100,7 +100,7 @@ Files above ~400 tokens become an outline + `ctx://`. Cursor large reads are all
 
 `ctx snapshot` checkpoints SQLite. `ctx version pin|use|rollback` keeps copies under `~/.ctx/versions/`. `ctx uninstall --purge --yes` strips hooks and archives `~/.ctx`.
 
-CI: `.github/actions/setup-ctx` plus `ctx ci --shell -- <cmd>` (markdown with `ctx://` links). A `v*` tag publishes GitHub Release binaries (macOS arm64/x86_64, Linux gnu/musl, Windows msvc) and `ghcr.io/<owner>/ctx`. Until that tag exists, `install.sh` and `cargo install --git` build from source.
+CI: `.github/actions/setup-ctx` plus `ctx ci --shell -- <cmd>` (markdown with `ctx://` links). A `v*` tag publishes GitHub Release CLI binaries (macOS arm64/x86_64, Linux gnu/musl, Windows msvc), macOS `CTX.app` zips, and `ghcr.io/<owner>/ctx`. `install.sh` downloads the latest tarball, or builds from source if the asset is missing.
 
 ## Non-goals
 

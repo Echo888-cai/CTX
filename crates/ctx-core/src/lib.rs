@@ -39,7 +39,7 @@ pub use ctx_pager::{
     extract_task, is_referenced, looks_signal, parse_task, start_of_today, start_of_week,
     RecentPage, WorkingSet,
 };
-pub use ctx_store::{hook_latency_ms, CtxPaths, Store, TokenTotals};
+pub use ctx_store::{hook_latency_ms, CtxPaths, ModelRow, Store, TokenTotals};
 pub use ctx_telemetry::{
     catalog_json, fmt_compact, fmt_num, format_why, is_auto_id, official_price_meta,
     refresh_official_prices, refresh_official_prices_now, round_usd, session_report, PriceBook,

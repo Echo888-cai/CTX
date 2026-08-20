@@ -101,10 +101,11 @@ try_prebuilt() {
 
 CTX is on this machine.
 
-  ctx app              open today's avoided-token dashboard
-  ctx app --install-service   start it at login (macOS / Linux)
-  ctx status           same numbers in the terminal
-  ctx doctor           wiring check
+  ctx app                 open today's avoided-token dashboard
+  ctx app --install-app   macOS: Dock app (optional)
+  ctx app --install-service   start the dashboard at login (macOS / Linux)
+  ctx status              same numbers in the terminal
+  ctx doctor              wiring check
 
 The big number is tokens that never entered the model.
 Raw context stayed on disk. Nothing was summarized away.
@@ -122,10 +123,11 @@ EOF
 
 CTX is on this machine.
 
-  ctx app              open today's avoided-token dashboard
-  ctx app --install-service   start it at login (macOS / Linux)
-  ctx status           same numbers in the terminal
-  ctx doctor           wiring check
+  ctx app                 open today's avoided-token dashboard
+  ctx app --install-app   macOS: Dock app (optional)
+  ctx app --install-service   start the dashboard at login (macOS / Linux)
+  ctx status              same numbers in the terminal
+  ctx doctor              wiring check
 
 The big number is tokens that never entered the model.
 Raw context stayed on disk. Nothing was summarized away.

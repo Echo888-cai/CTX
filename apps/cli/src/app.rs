@@ -480,9 +480,10 @@ fn install_menubar_app() -> anyhow::Result<()> {
                 fs::remove_dir_all(&dest)?;
             }
             copy_dir(&built, &dest)?;
+            install_menubar_launch_agent(&dest)?;
             let _ = Command::new("open").arg(&dest).status();
-            println!("CTX menu bar  {}", dest.display());
-            println!("Look for ↓% next to the clock. Click it for today's avoided tokens.");
+            println!("CTX.app  {}", dest.display());
+            println!("Double-click it like CC Switch: Dock icon + main window.");
             return Ok(());
         }
         let script = find_menubar_build().context(
@@ -557,6 +558,93 @@ fn copy_dir(src: &std::path::Path, dest: &std::path::Path) -> anyhow::Result<()>
             fs::copy(entry.path(), to)?;
         }
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_menubar_launch_agent(app: &std::path::Path) -> anyhow::Result<()> {
+    let home = dirs::home_dir().context("home directory")?;
+    let agents = home.join("Library/LaunchAgents");
+    fs::create_dir_all(&agents)?;
+    let binary = app.join("Contents/MacOS/CTX");
+    let plist_path = agents.join("ai.ctx.bar.plist");
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ctx.bar</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>
+"#,
+        binary.display()
+    );
+    fs::write(&plist_path, plist)?;
+    let uid = String::from_utf8_lossy(
+        &Command::new("id")
+            .arg("-u")
+            .output()
+            .context("id -u")?
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    let domain = format!("gui/{uid}");
+    let label = format!("{domain}/ai.ctx.bar");
+    let _ = Command::new("launchctl")
+        .args(["bootout", &label])
+        .status();
+    let boot = Command::new("launchctl")
+        .args(["bootstrap", &domain, plist_path.to_str().unwrap_or("")])
+        .status()
+        .context("launchctl bootstrap")?;
+    if !boot.success() {
+        let _ = Command::new("launchctl")
+            .args(["load", "-w", plist_path.to_str().unwrap_or("")])
+            .status();
+    }
+    let _ = Command::new("launchctl")
+        .args(["kickstart", "-k", &label])
+        .status();
+    // Control Center, not ai.ctx.bar, decides if the extra is drawn.
+    let _ = Command::new("defaults").args([
+        "write",
+        "com.apple.controlcenter",
+        "NSStatusItem Visible ai.ctx.bar",
+        "-bool",
+        "true",
+    ]).status();
+    let _ = Command::new("defaults").args([
+        "write",
+        "com.apple.controlcenter",
+        "NSStatusItem VisibleCC ai.ctx.bar",
+        "-bool",
+        "true",
+    ]).status();
+    let _ = Command::new("defaults").args([
+        "write",
+        "com.apple.controlcenter",
+        "NSStatusItem Preferred Position ai.ctx.bar",
+        "-float",
+        "700",
+    ]).status();
+    let _ = Command::new("defaults").args([
+        "delete",
+        "ai.ctx.bar",
+        "NSStatusItem Preferred Position ai.ctx.bar",
+    ]).status();
+    let _ = Command::new("killall").arg("ControlCenter").status();
     Ok(())
 }
 

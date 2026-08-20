@@ -197,6 +197,44 @@ impl PriceBook {
         Some(round_usd(avoided_tokens as f64 / 1_000_000.0 * price))
     }
 
+    /// Stable family id for dashboard grouping.
+    ///
+    /// Cursor effort variants (`cursor-grok-4.5-high-fast`) and bare API ids
+    /// (`grok-4.5`) collapse to the same catalog key so the model list does not
+    /// show duplicate display names. Unlike [`Self::resolve`], this deliberately
+    /// ignores whether a `cursor-*` key exists in the price map — official
+    /// caches often price the Cursor-prefixed id, which would otherwise keep
+    /// `cursor-grok-4.5` and `grok-4.5` as separate families.
+    pub fn canonical_id(&self, model_id: &str) -> String {
+        let id = model_id.trim();
+        if id.is_empty() || id == "__unknown__" || id.eq_ignore_ascii_case("unknown") {
+            return "__unknown__".into();
+        }
+        if id.eq_ignore_ascii_case("default") || id.eq_ignore_ascii_case("auto") {
+            return "default".into();
+        }
+        let mut key = normalize(id);
+        for _ in 0..8 {
+            if let Some(canon) = self.aliases.get(&key) {
+                if canon != &key {
+                    key = canon.clone();
+                    continue;
+                }
+            }
+            let bare = strip_cursor_prefix(&key);
+            if bare != key {
+                key = bare.to_string();
+                continue;
+            }
+            if let Some(next) = strip_effort_suffix(&key) {
+                key = next;
+                continue;
+            }
+            break;
+        }
+        key
+    }
+
     /// Human label for a stored model id: catalog name when known, else the id,
     /// else `other` / `Auto`.
     pub fn display_name(model_id: &str) -> String {
@@ -634,6 +672,32 @@ mod tests {
         assert_eq!(PriceBook::display_name("auto"), "Auto");
         assert_eq!(PriceBook::display_name("grok-4.6"), "Grok 4.6");
         assert_eq!(PriceBook::display_name("cursor-grok-4.5-high"), "Grok 4.5");
+    }
+
+    #[test]
+    fn canonical_id_merges_cursor_effort_variants() {
+        let (_dir, book) = book("");
+        assert_eq!(book.canonical_id("grok-4.5"), "grok-4.5");
+        assert_eq!(book.canonical_id("cursor-grok-4.5"), "grok-4.5");
+        assert_eq!(book.canonical_id("cursor-grok-4.5-high-fast"), "grok-4.5");
+        assert_eq!(book.canonical_id("cursor-grok-4.6-high"), "grok-4.6");
+        assert_eq!(book.canonical_id("claude-opus-5-thinking-max"), "claude-opus-5");
+        assert_eq!(book.canonical_id("default"), "default");
+        assert_eq!(book.canonical_id("__unknown__"), "__unknown__");
+    }
+
+    #[test]
+    fn canonical_id_merges_even_when_cursor_key_is_priced() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("prices.official.json"),
+            r#"{ "_meta": { "fetched_at": 1 }, "cursor-grok-4.5": 2.0, "grok-4.5": 2.0 }"#,
+        )
+        .unwrap();
+        let paths = CtxPaths::from_root(dir.path().to_path_buf());
+        let book = PriceBook::load(&paths, "");
+        assert_eq!(book.canonical_id("cursor-grok-4.5"), "grok-4.5");
+        assert_eq!(book.canonical_id("cursor-grok-4.5-high-fast"), "grok-4.5");
     }
 
     #[test]

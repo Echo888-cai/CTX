@@ -65,9 +65,21 @@ jobs:
             tar -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
             echo "ASSET=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_ENV"
           fi
+      - name: Package macOS app
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          bash apps/macos/build.sh
+          ditto -c -k --keepParent apps/macos/dist/CTX.app "CTX-macos-${{ matrix.target }}.zip"
+          echo "APP_ASSET=CTX-macos-${{ matrix.target }}.zip" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
+          generate_release_notes: true
+      - uses: softprops/action-gh-release@v2
+        if: env.APP_ASSET != ''
+        with:
+          files: ${{ env.APP_ASSET }}
           generate_release_notes: true
 
   docker:

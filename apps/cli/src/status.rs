@@ -1,6 +1,6 @@
 use ctx_core::{
-    catalog_json, compact_advise, fmt_compact, start_of_today, Config, CtxPaths, PriceBook,
-    Runtime, Snapshot, Store,
+    catalog_json, compact_advise, fmt_compact, start_of_today, Config, CtxPaths, ModelRow,
+    PriceBook, Runtime, Snapshot, Store,
 };
 use serde_json::{json, Value};
 
@@ -77,44 +77,33 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "" | "all" => None,
         other => Some(other),
     };
-    let totals = rt.store.dashboard_totals(since, selected_model)?;
     let book = load_price_book(&rt.config);
-    let mut models = rt
+    let mut raw_models = rt
         .store
         .dashboard_models(since)?
         .into_iter()
         .collect::<Vec<_>>();
-    models.sort_by(|a, b| {
+    raw_models.sort_by(|a, b| {
         let au = a.id.is_empty() || a.id == "__unknown__";
         let bu = b.id.is_empty() || b.id == "__unknown__";
         au.cmp(&bu).then(b.totals.avoided.cmp(&a.totals.avoided))
     });
-    let all_models = models
-        .into_iter()
-        .map(|m| {
-            let source_harnesses = m
-                .source_harnesses
-                .iter()
-                .map(|harness| harness_label(harness))
-                .filter(|label| !label.is_empty())
-                .collect::<Vec<_>>();
-            with_price(
-                &book,
-                json!({
-                    "id": m.id,
-                    "name": model_label(&m.id),
-                    "sessions": m.sessions,
-                    "raw": m.totals.raw,
-                    "delivered": m.totals.delivered,
-                    "avoided": m.totals.avoided,
-                    "refetched": m.totals.refetched,
-                    "net_avoided": m.totals.net_avoided(),
-                    "reduction_pct": m.totals.reduction_pct(),
-                    "source_harnesses": source_harnesses,
-                }),
-            )
-        })
-        .collect::<Vec<_>>();
+    let filter_ids = selected_model.map(|sel| {
+        let want = book.canonical_id(sel);
+        let mut ids: Vec<String> = raw_models
+            .iter()
+            .filter(|m| book.canonical_id(&m.id) == want || m.id == sel)
+            .map(|m| m.id.clone())
+            .collect();
+        if ids.is_empty() {
+            ids.push(sel.to_string());
+        }
+        ids
+    });
+    let totals = rt
+        .store
+        .dashboard_totals_for(since, filter_ids.as_deref())?;
+    let all_models = merge_model_rows(&book, raw_models);
     let model_options = all_models
         .iter()
         .map(|m| {
@@ -127,12 +116,15 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         .collect::<Vec<_>>();
     let mut models = all_models;
     if let Some(id) = selected_model {
-        models.retain(|m| m["id"] == id);
+        let want = book.canonical_id(id);
+        models.retain(|m| {
+            m["id"].as_str() == Some(id) || m["id"].as_str() == Some(want.as_str())
+        });
     }
     let money = price_summary(&models);
     let sparse = rt
         .store
-        .dashboard_series(since, bucket, tz, selected_model)?;
+        .dashboard_series_for(since, bucket, tz, filter_ids.as_deref())?;
     let series = (0..count)
         .map(|i| {
             let t = start_bucket + (i as i64) * bucket;
@@ -148,7 +140,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         .collect::<Vec<_>>();
     let by_harness = rt
         .store
-        .dashboard_by_harness(since, selected_model)?
+        .dashboard_by_harness_for(since, filter_ids.as_deref())?
         .into_iter()
         .map(|(id, t)| {
             json!({
@@ -171,7 +163,9 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "range": range,
         "from": since,
         "to": until,
-        "model": selected_model.unwrap_or("all"),
+        "model": selected_model
+            .map(|id| book.canonical_id(id))
+            .unwrap_or_else(|| "all".into()),
         "date_label": date_label(&series, since, until, tz),
         "totals": totals_json(totals),
         "series": series,
@@ -354,6 +348,71 @@ fn harness_label(id: &str) -> String {
 
 fn model_label(id: &str) -> String {
     PriceBook::display_name(id)
+}
+
+fn merge_model_rows(book: &PriceBook, rows: Vec<ModelRow>) -> Vec<Value> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<String, ModelRow> = BTreeMap::new();
+    for row in rows {
+        let key = book.canonical_id(&row.id);
+        match groups.get_mut(&key) {
+            Some(acc) => {
+                acc.sessions = acc.sessions.saturating_add(row.sessions);
+                acc.totals.raw = acc.totals.raw.saturating_add(row.totals.raw);
+                acc.totals.delivered = acc.totals.delivered.saturating_add(row.totals.delivered);
+                acc.totals.avoided = acc.totals.avoided.saturating_add(row.totals.avoided);
+                acc.totals.refetched = acc.totals.refetched.saturating_add(row.totals.refetched);
+                for harness in row.source_harnesses {
+                    if !acc.source_harnesses.iter().any(|h| h == &harness) {
+                        acc.source_harnesses.push(harness);
+                    }
+                }
+            }
+            None => {
+                groups.insert(
+                    key.clone(),
+                    ModelRow {
+                        id: key,
+                        sessions: row.sessions,
+                        totals: row.totals,
+                        source_harnesses: row.source_harnesses,
+                    },
+                );
+            }
+        }
+    }
+    let mut merged: Vec<_> = groups.into_values().collect();
+    merged.sort_by(|a, b| {
+        let au = a.id == "__unknown__" || a.id == "default";
+        let bu = b.id == "__unknown__" || b.id == "default";
+        au.cmp(&bu).then(b.totals.avoided.cmp(&a.totals.avoided))
+    });
+    merged
+        .into_iter()
+        .map(|m| {
+            let source_harnesses = m
+                .source_harnesses
+                .iter()
+                .map(|harness| harness_label(harness))
+                .filter(|label| !label.is_empty())
+                .collect::<Vec<_>>();
+            with_price(
+                book,
+                json!({
+                    "id": m.id,
+                    "name": model_label(&m.id),
+                    "sessions": m.sessions,
+                    "raw": m.totals.raw,
+                    "delivered": m.totals.delivered,
+                    "avoided": m.totals.avoided,
+                    "refetched": m.totals.refetched,
+                    "net_avoided": m.totals.net_avoided(),
+                    "reduction_pct": m.totals.reduction_pct(),
+                    "source_harnesses": source_harnesses,
+                }),
+            )
+        })
+        .collect()
 }
 
 fn now_unix() -> i64 {

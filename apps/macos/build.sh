@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the native macOS menu bar app (not Electron/Tauri).
+# Build the standalone macOS app (Dock + main window + menu bar tray).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -8,7 +8,7 @@ INSTALL="${HOME}/Applications/CTX.app"
 ASSETS="$ROOT/../cli/src/assets"
 
 say() { printf '==> %s\n' "$*"; }
-die() { printf 'ctx bar: %s\n' "$*" >&2; exit 1; }
+die() { printf 'ctx app: %s\n' "$*" >&2; exit 1; }
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "need $1"
@@ -23,7 +23,7 @@ TARGET="${ARCH}-apple-macosx13.0"
 BIN_DIR="$(mktemp -d)"
 trap 'rm -rf "$BIN_DIR"' EXIT
 
-say "compiling CTX menu bar ($TARGET)"
+say "compiling CTX.app ($TARGET)"
 # shellcheck disable=SC2086
 swiftc -parse-as-library \
   -O \
@@ -31,6 +31,7 @@ swiftc -parse-as-library \
   -target "$TARGET" \
   -framework SwiftUI \
   -framework AppKit \
+  -framework WebKit \
   -o "$BIN_DIR/CTX" \
   "$ROOT"/Sources/*.swift
 
@@ -38,11 +39,29 @@ rm -rf "$DIST"
 mkdir -p "$DIST/Contents/MacOS" "$DIST/Contents/Resources"
 cp "$ROOT/Info.plist" "$DIST/Contents/Info.plist"
 cp "$BIN_DIR/CTX" "$DIST/Contents/MacOS/CTX"
-for asset in ctx-wordmark.png ctx-menubar.png ctx-mark.png; do
+for asset in ctx-wordmark.png ctx-menubar.png ctx-mark.png ctx-appicon.png; do
   if [ -f "$ASSETS/$asset" ]; then
     cp "$ASSETS/$asset" "$DIST/Contents/Resources/$asset"
   fi
 done
+
+ICON_SRC="$ASSETS/ctx-appicon.png"
+if [ ! -f "$ICON_SRC" ]; then
+  ICON_SRC="$ASSETS/ctx-mark.png"
+fi
+if [ -f "$ICON_SRC" ] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
+  ICONSET="$BIN_DIR/AppIcon.iconset"
+  mkdir -p "$ICONSET"
+  for size in 16 32 64 128 256 512; do
+    sips -z "$size" "$size" "$ICON_SRC" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+    double=$((size * 2))
+    if [ "$double" -le 1024 ]; then
+      sips -z "$double" "$double" "$ICON_SRC" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+    fi
+  done
+  iconutil -c icns -o "$DIST/Contents/Resources/AppIcon.icns" "$ICONSET" >/dev/null 2>&1 || true
+fi
+
 chmod +x "$DIST/Contents/MacOS/CTX"
 
 if command -v codesign >/dev/null 2>&1; then
@@ -60,30 +79,17 @@ if [ "${1:-}" = "--install" ]; then
   rm -rf "$INSTALL"
   cp -R "$DIST" "$INSTALL"
   xattr -dr com.apple.quarantine "$INSTALL" 2>/dev/null || true
+  if [ -w /Applications ]; then
+    rm -rf /Applications/CTX.app
+    cp -R "$DIST" /Applications/CTX.app
+    xattr -dr com.apple.quarantine /Applications/CTX.app 2>/dev/null || true
+    INSTALL="/Applications/CTX.app"
+  fi
   say "installed $INSTALL"
 
-  PLIST="${HOME}/Library/LaunchAgents/ai.ctx.bar.plist"
-  cat > "$PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>ai.ctx.bar</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${INSTALL}/Contents/MacOS/CTX</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-</dict>
-</plist>
-PLIST
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
-    || launchctl load -w "$PLIST" 2>/dev/null \
-    || open "$INSTALL"
-  launchctl kickstart -k "gui/$(id -u)/ai.ctx.bar" 2>/dev/null || open "$INSTALL"
-  say "look for the CTX mark next to the clock"
+  defaults write com.apple.controlcenter "NSStatusItem Visible ai.ctx.bar" -bool true
+  defaults write com.apple.controlcenter "NSStatusItem VisibleCC ai.ctx.bar" -bool true
+  defaults write com.apple.controlcenter "NSStatusItem Preferred Position ai.ctx.bar" -float 700
+  open "$INSTALL"
+  say "CTX.app is a regular Mac app — Dock + main window, like CC Switch"
 fi

@@ -2,13 +2,16 @@ import AppKit
 import SwiftUI
 
 @main
-struct CTXBarApp: App {
+struct CTXApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        // Keeps the SwiftUI app lifecycle alive for an accessory (menu-bar) app.
-        Settings {
-            EmptyView()
+        Window("CTX", id: "main") {
+            DashboardView()
+        }
+        .defaultSize(width: 1080, height: 740)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
         }
     }
 }
@@ -17,34 +20,16 @@ struct CTXBarApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = StatusModel()
     private var statusItem: NSStatusItem?
-    private var popover: NSPopover?
     private var titleObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = NSSize(width: 336, height: 560)
-        popover.contentViewController = NSHostingController(
-            rootView: PopoverView().environmentObject(model)
-        )
-        self.popover = popover
-
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = item.button {
-            button.image = Self.menuBarImage()
-            button.imagePosition = .imageLeft
-            button.imageHugsTitle = true
-            button.title = model.menuLabel
-            button.toolTip = "CTX"
-            button.target = self
-            button.action = #selector(togglePopover(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        }
-        statusItem = item
-        refreshTitle()
+        NSApp.setActivationPolicy(.regular)
+        ProcessInfo.processInfo.disableAutomaticTermination("CTX app")
+        ProcessInfo.processInfo.disableSuddenTermination()
+        Self.forceMenuBarVisible()
+        installTray()
+        DashboardLoader.shared.start()
+        showMainWindow()
 
         titleObserver = NotificationCenter.default.addObserver(
             forName: .ctxStatusDidChange,
@@ -55,11 +40,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.refreshTitle()
             }
         }
+    }
 
-        // Ensure login item points at this bundle when already enabled.
-        if LoginItem.isEnabled {
-            try? LoginItem.setEnabled(true)
-        }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -68,40 +57,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func togglePopover(_ sender: Any?) {
-        guard let button = statusItem?.button, let popover else { return }
-        if popover.isShown {
-            popover.performClose(sender)
+    static func forceMenuBarVisible() {
+        let keysVisible = [
+            "NSStatusItem Visible ai.ctx.bar",
+            "NSStatusItem VisibleCC ai.ctx.bar",
+        ]
+        let app = UserDefaults.standard
+        for key in keysVisible {
+            app.set(true, forKey: key)
+        }
+        if let cc = UserDefaults(suiteName: "com.apple.controlcenter") {
+            for key in keysVisible {
+                cc.set(true, forKey: key)
+            }
+            cc.set(Float(700), forKey: "NSStatusItem Preferred Position ai.ctx.bar")
+        }
+    }
+
+    private func installTray() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = "ai.ctx.bar"
+        item.isVisible = true
+        if let button = item.button {
+            button.image = Self.menuBarImage()
+            button.imagePosition = .imageLeft
+            button.title = "CTX"
+            button.font = NSFont.menuBarFont(ofSize: 13)
+            button.toolTip = "CTX"
+            button.target = self
+            button.action = #selector(handleTray(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        statusItem = item
+        refreshTitle()
+    }
+
+    @objc private func handleTray(_ sender: Any?) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showTrayMenu()
             return
         }
-        model.refresh()
+        showMainWindow()
+    }
+
+    private func showTrayMenu() {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "打开 CTX", action: #selector(openMain(_:)), keyEquivalent: "")
+        let pause = NSMenuItem(
+            title: model.enabled ? "暂停" : "继续",
+            action: #selector(toggleEnabled(_:)),
+            keyEquivalent: ""
+        )
+        menu.addItem(pause)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "退出 CTX", action: #selector(quitApp(_:)), keyEquivalent: "q")
+        for item in menu.items {
+            item.target = self
+        }
+        statusItem?.menu = menu
+        statusItem?.button?.performClick(nil)
+        statusItem?.menu = nil
+        statusItem?.button?.target = self
+        statusItem?.button?.action = #selector(handleTray(_:))
+    }
+
+    @objc private func openMain(_ sender: Any?) {
+        showMainWindow()
+    }
+
+    @objc private func toggleEnabled(_ sender: Any?) {
+        model.setEnabled(!model.enabled)
         refreshTitle()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    @objc private func quitApp(_ sender: Any?) {
+        NSApp.terminate(nil)
+    }
+
+    func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.canBecomeMain }) {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        if let window = NSApp.windows.first {
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func refreshTitle() {
-        statusItem?.button?.title = " \(model.menuLabel)"
+        statusItem?.isVisible = true
+        let label = model.menuLabel
+        statusItem?.button?.title = (label == "CTX") ? "CTX" : "CTX \(label)"
         statusItem?.button?.image = Self.menuBarImage()
     }
 
     private static func menuBarImage() -> NSImage {
-        let names = ["ctx-menubar", "ctx-mark"]
-        for name in names {
-            if let url = Bundle.main.url(forResource: name, withExtension: "png"),
-               let image = NSImage(contentsOf: url)
-            {
-                let h: CGFloat = 16
-                let scale = h / max(image.size.height, 1)
-                let size = NSSize(width: max(16, image.size.width * scale), height: h)
-                image.size = size
-                image.isTemplate = true
-                return image
-            }
+        if let image = NSImage(
+            systemSymbolName: "square.stack.3d.up.fill",
+            accessibilityDescription: "CTX"
+        ) {
+            let sized = image.withSymbolConfiguration(.init(pointSize: 13, weight: .medium)) ?? image
+            sized.isTemplate = true
+            return sized
         }
-        let fallback = NSImage(systemSymbolName: "circle.grid.cross", accessibilityDescription: "CTX")
-        fallback?.isTemplate = true
-        return fallback ?? NSImage(size: NSSize(width: 16, height: 16))
+        return NSImage(size: NSSize(width: 14, height: 14))
     }
 }
 

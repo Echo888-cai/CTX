@@ -38,13 +38,27 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-一行。有 `v*` Release 就下预编译包；没有则装 Rust 并本地编译。
+从 **[GitHub Releases](https://github.com/Echo888-cai/CTX/releases)** 下载：按系统选 tarball（`ctx-aarch64-apple-darwin.tar.gz`、`ctx-x86_64-apple-darwin.tar.gz`、`ctx-x86_64-unknown-linux-gnu.tar.gz` …），Windows 下 `.exe`。
+
+一行（macOS / Linux）。拉取 `https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz`，然后跑 `ctx init`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
-从源码安装，现在就能用：
+然后：
+
+```bash
+ctx setup --wizard          # 探测 harness，选预算
+ctx app                     # 仪表盘：今天挡在模型外面的 token
+ctx app --install-service   # 可选：登录后自动开仪表盘
+```
+
+**macOS 应用**（Dock + 仪表盘窗口 + 菜单栏）：装好 CLI 后执行 `ctx app --install-app`。也可以在同一 Releases 页下载 `CTX-macos-aarch64-apple-darwin.zip` / `CTX-macos-x86_64-apple-darwin.zip`，解压后把 `CTX.app` 拖进应用程序。
+
+最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
+
+从源码安装（备选）：
 
 ```bash
 cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
@@ -69,17 +83,7 @@ docker build -t ctx .
 docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ctx status
 ```
 
-然后：
-
-```bash
-ctx app                 # 仪表盘：今天挡在模型外面的 token
-ctx app --install-service   # 可选：登录后自动开
-ctx setup --wizard      # 探测 harness，选预算
-```
-
-最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
-
-推送 `v*` tag 之后，Release workflow 会发布 tarball 和 `ghcr.io/echo888-cai/ctx`。那时再用 `dist/homebrew/ctx.rb`。
+Homebrew：`dist/homebrew/ctx.rb` 指向 GitHub Release 的 tarball。镜像：`ghcr.io/echo888-cai/ctx`。
 
 ## 模型看到什么
 

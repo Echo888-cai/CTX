@@ -124,7 +124,7 @@ enum Commands {
         /// Remove the login dashboard
         #[arg(long)]
         uninstall_service: bool,
-        /// Install the macOS menu bar app
+        /// Install the macOS CTX.app (Dock + window)
         #[arg(long)]
         install_app: bool,
     },

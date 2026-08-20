@@ -190,11 +190,52 @@
   .comp-legend .share { width: 44px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
   .comp-legend li.kept .tokens { color: var(--kept-text); }
   .ledger { padding: 34px 0 36px; border-top: 1px solid var(--line); }
-  .ledger-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px 28px; }
-  .ledger-grid .n { font-size: 22px; font-weight: 650; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
-  .ledger-grid .l { margin-top: 6px; color: var(--muted); font-size: 13px; }
-  .ledger-note { margin-top: 16px; color: var(--muted); font-size: 13px; }
-  @media (max-width: 800px) { .ledger-grid { grid-template-columns: 1fr 1fr; } }
+  .heat { display: grid; grid-template-columns: minmax(280px, 1.2fr) minmax(220px, .8fr); gap: 28px 48px; align-items: end; }
+  .heat-hero { display: flex; align-items: flex-end; gap: 18px; min-width: 0; }
+  .heat-pct {
+    font-size: 64px; font-weight: 620; letter-spacing: -.05em; line-height: .92;
+    font-variant-numeric: tabular-nums;
+  }
+  .heat-pct small { font-size: 28px; font-weight: 560; letter-spacing: -.03em; margin-left: 2px; }
+  .heat-copy { padding-bottom: 6px; min-width: 0; }
+  .heat-title { font-size: 16px; font-weight: 600; letter-spacing: .08em; }
+  .heat-sub { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; max-width: 36em; }
+  .heat-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 28px; }
+  .heat-stats .n { font-size: 22px; font-weight: 650; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .heat-stats .l { margin-top: 6px; color: var(--muted); font-size: 13px; }
+  .heat-shine {
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    animation: heat-flow 4.2s linear infinite;
+    transform: translateZ(0);
+  }
+  .heat-shine.tier-apex {
+    background-image: linear-gradient(90deg, #ff5b7a, #ffb347, #ffe566, #7dffb3, #6bb8ff, #c77dff, #ff5b7a, #ffb347, #ffe566, #7dffb3, #6bb8ff, #c77dff, #ff5b7a);
+  }
+  .heat-shine.tier-gold {
+    background-image: linear-gradient(90deg, #8a6414, #e8c15a, #fff4c8, #d4a017, #8a6414, #e8c15a, #fff4c8, #d4a017, #8a6414);
+  }
+  .heat-shine.tier-blue {
+    background-image: linear-gradient(90deg, #1f5eaa, #7eb4ee, #e7f2fc, #3d86d4, #1f5eaa, #7eb4ee, #e7f2fc, #3d86d4, #1f5eaa);
+  }
+  .heat-shine.tier-plain {
+    background: none; color: var(--quiet); -webkit-text-fill-color: var(--quiet); animation: none;
+  }
+  @keyframes heat-flow {
+    from { background-position: 0% 50%; }
+    to { background-position: 100% 50%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .heat-shine { animation: none; background-position: 40% 50%; }
+  }
+  @media (max-width: 800px) {
+    .heat, .heat-stats { grid-template-columns: 1fr 1fr; }
+    .heat-hero { grid-column: 1 / -1; }
+    .heat-pct { font-size: 48px; }
+  }
   .row-trend { display: grid; grid-template-columns: 8fr 4fr; column-gap: 40px; padding: 34px 0 36px; border-top: 1px solid var(--line); }
   .trend, .by-source { min-width: 0; }
   .by-source { align-self: start; }
@@ -405,19 +446,21 @@
       <div class="comp-bar" id="comp-bar" role="img" aria-label="上下文构成"></div>
       <ul class="comp-legend" id="comp-legend"></ul>
     </section>
-    <section class="ledger" aria-label="实测账本">
-      <div class="section-head"><h2>实测账本</h2><span class="range-label" id="ledger-kind">—</span></div>
-      <div class="ledger-grid">
-        <div><div class="n" id="led-read">—</div><div class="l">缓存读取</div></div>
-        <div><div class="n" id="led-write">—</div><div class="l">缓存写入</div></div>
-        <div><div class="n" id="led-hit">—</div><div class="l">命中率</div></div>
-        <div><div class="n" id="led-usd">—</div><div class="l">分层计价</div></div>
-        <div><div class="n" id="led-miss">—</div><div class="l">缓存未命中</div></div>
-        <div><div class="n" id="led-retry">—</div><div class="l">回取</div></div>
-        <div><div class="n" id="led-pass">—</div><div class="l">无失败会话</div></div>
-        <div><div class="n" id="led-compact">—</div><div class="l">避开压缩</div></div>
+    <section class="ledger" aria-label="缓存命中率">
+      <div class="section-head"><h2>缓存命中率</h2><span class="range-label" id="ledger-kind"></span></div>
+      <div class="heat">
+        <div class="heat-hero">
+          <div class="heat-pct" id="led-hit">—</div>
+          <div class="heat-copy">
+            <div class="heat-title" id="led-hit-title">还没有记录</div>
+            <p class="heat-sub" id="led-hit-sub">模型直接读到上次留下的上下文，不必再付一遍全价。</p>
+          </div>
+        </div>
+        <div class="heat-stats">
+          <div><div class="n" id="led-read">—</div><div class="l">已复用</div></div>
+          <div><div class="n" id="led-usd">—</div><div class="l">估算账单</div></div>
+        </div>
       </div>
-      <div class="ledger-note" id="ledger-note">运行 ctx ledger --sync 从 Claude / Codex 转录写入实测用量。</div>
     </section>
     <section class="row-trend">
       <div class="trend">
@@ -669,28 +712,29 @@ function renderSources(rows) {
     };
   });
 }
+function heatTier(rate) {
+  if (rate == null || Number.isNaN(rate)) return { name: "还没有记录", cls: "" };
+  if (rate >= 0.95) return { name: "极致", cls: "heat-shine tier-apex" };
+  if (rate >= 0.80) return { name: "超高", cls: "heat-shine tier-gold" };
+  if (rate >= 0.60) return { name: "优秀", cls: "heat-shine tier-blue" };
+  return { name: "普通", cls: "heat-shine tier-plain" };
+}
 function renderLedger(led) {
   const L = led || {};
-  const compactN = (n) => compact(Number(n || 0));
-  $("led-read").textContent = compactN(L.cache_read_tokens);
-  $("led-write").textContent = compactN(L.cache_write_tokens);
-  $("led-hit").textContent = L.hit_rate != null ? `${Math.round(Number(L.hit_rate) * 100)}%` : "—";
+  const rate = L.hit_rate == null ? null : Number(L.hit_rate);
+  const pct = rate == null ? null : Math.round(rate * 100);
+  const tier = heatTier(rate);
+  const sig = `${pct}|${tier.cls}`;
+  const hit = $("led-hit");
+  if (hit.dataset.sig !== sig) {
+    hit.dataset.sig = sig;
+    hit.innerHTML = pct == null ? "—" : `${pct}<small>%</small>`;
+    hit.className = "heat-pct" + (tier.cls ? " " + tier.cls : "");
+    $("led-hit-title").textContent = tier.name;
+    $("led-hit-title").className = "heat-title" + (tier.cls ? " " + tier.cls : "");
+  }
+  $("led-read").textContent = compact(Number(L.cache_read_tokens || 0));
   $("led-usd").textContent = L.usd != null ? money(L.usd) : "—";
-  if ($("led-miss")) $("led-miss").textContent = compactN(L.cache_miss_tokens);
-  if ($("led-retry")) $("led-retry").textContent = compactN(L.retries ?? L.page_faults);
-  if ($("led-pass")) $("led-pass").textContent = compactN(L.task_passed);
-  if ($("led-compact")) $("led-compact").textContent = L.avoided_compact_usd != null ? money(L.avoided_compact_usd) : "—";
-  $("ledger-kind").textContent = L.kind === "measured" ? "来自转录" : "尚未同步";
-  const bits = [];
-  if (L.turns) bits.push(`${L.turns} 轮`);
-  if (L.compact_events) bits.push(`压缩 ${L.compact_events} 次`);
-  if (L.page_faults) bits.push(`回取 ${L.page_faults}`);
-  if (L.cache_miss_turns) bits.push(`未命中 ${L.cache_miss_turns} 轮`);
-  if (L.advice && L.advice.keep_cache === false) bits.push(`建议新纪元 · ${L.advice.reason}`);
-  else if (L.advice && L.advice.keep_cache) bits.push("保持热缓存");
-  if (L.plan_type) bits.push(`${L.plan_type} ${L.quota_used_pct != null ? Math.round(L.quota_used_pct) + "%" : ""}`);
-  if (L.resets_at) bits.push(`重置 ${L.resets_at}`);
-  $("ledger-note").textContent = bits.join(" · ") || "运行 ctx ledger --sync 从 Claude / Codex 转录写入实测用量。";
 }
 function updateOptions(options, selected) {
   state.models = [{ id: "all", name: "全部模型" }].concat(Array.isArray(options) ? options : []);

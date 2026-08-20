@@ -1,6 +1,6 @@
 //! Aggregations for the local dashboard. Kernel store stays unchanged.
 
-use rusqlite::params;
+use rusqlite::{params, params_from_iter};
 
 use super::{Result, Store, TokenTotals};
 
@@ -21,37 +21,51 @@ pub struct ModelRow {
 
 impl Store {
     pub fn dashboard_totals(&self, since: i64, model: Option<&str>) -> Result<TokenTotals> {
+        let owned = model.map(|m| vec![m.to_string()]);
+        self.dashboard_totals_for(since, owned.as_deref())
+    }
+
+    pub fn dashboard_totals_for(
+        &self,
+        since: i64,
+        models: Option<&[String]>,
+    ) -> Result<TokenTotals> {
         let conn = self.reader();
-        let row = if let Some(model) = model {
-            conn.query_row(
-                "SELECT
-                    COALESCE(SUM(o.raw_tokens), 0),
-                    COALESCE(SUM(o.delivered_tokens), 0),
-                    COALESCE(SUM(o.avoided_tokens), 0),
-                    COALESCE(SUM(o.refetched_tokens), 0)
-                 FROM observations o
-                 LEFT JOIN sessions s ON s.id = o.session_id
-                 WHERE o.created_at >= ?1
-                   AND CASE WHEN ?2 = '__unknown__'
-                            THEN COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''
-                            ELSE COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ?2
-                       END",
-                params![since, model],
-                map_totals,
-            )
-        } else {
-            conn.query_row(
-                "SELECT
-                    COALESCE(SUM(raw_tokens), 0),
-                    COALESCE(SUM(delivered_tokens), 0),
-                    COALESCE(SUM(avoided_tokens), 0),
-                    COALESCE(SUM(refetched_tokens), 0)
-                 FROM observations WHERE created_at >= ?1",
-                params![since],
-                map_totals,
-            )
+        let Some(models) = models.filter(|m| !m.is_empty()) else {
+            return conn
+                .query_row(
+                    "SELECT
+                        COALESCE(SUM(raw_tokens), 0),
+                        COALESCE(SUM(delivered_tokens), 0),
+                        COALESCE(SUM(avoided_tokens), 0),
+                        COALESCE(SUM(refetched_tokens), 0)
+                     FROM observations WHERE created_at >= ?1",
+                    params![since],
+                    map_totals,
+                )
+                .map_err(Into::into);
         };
-        row.map_err(Into::into)
+        let (filter, binds) = model_filter_clause(models);
+        let sql = format!(
+            "SELECT
+                COALESCE(SUM(o.raw_tokens), 0),
+                COALESCE(SUM(o.delivered_tokens), 0),
+                COALESCE(SUM(o.avoided_tokens), 0),
+                COALESCE(SUM(o.refetched_tokens), 0)
+             FROM observations o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.created_at >= ?1
+               AND ({filter})"
+        );
+        conn.query_row(
+            &sql,
+            params_from_iter(
+                std::iter::once(rusqlite::types::Value::from(since))
+                    .chain(binds.into_iter().map(Into::into)),
+            ),
+            map_totals,
+        )
+        .map_err(Into::into)
     }
 
     pub fn dashboard_models(&self, since: i64) -> Result<Vec<ModelRow>> {
@@ -99,41 +113,58 @@ impl Store {
         tz: i64,
         model: Option<&str>,
     ) -> Result<Vec<SeriesPoint>> {
+        let owned = model.map(|m| vec![m.to_string()]);
+        self.dashboard_series_for(since, bucket, tz, owned.as_deref())
+    }
+
+    pub fn dashboard_series_for(
+        &self,
+        since: i64,
+        bucket: i64,
+        tz: i64,
+        models: Option<&[String]>,
+    ) -> Result<Vec<SeriesPoint>> {
         let conn = self.reader();
-        let sql = if model.is_some() {
+        let mut points = Vec::new();
+        let Some(models) = models.filter(|m| !m.is_empty()) else {
+            let mut stmt = conn.prepare(
+                "SELECT ((created_at + ?2) / ?3) * ?3 - ?2,
+                        COALESCE(SUM(raw_tokens), 0),
+                        COALESCE(SUM(delivered_tokens), 0)
+                 FROM observations
+                 WHERE created_at >= ?1
+                 GROUP BY 1
+                 ORDER BY 1",
+            )?;
+            for row in stmt.query_map(params![since, tz, bucket], map_point)? {
+                points.push(row?);
+            }
+            return Ok(points);
+        };
+        let (filter, binds) = model_filter_clause(models);
+        let sql = format!(
             "SELECT ((o.created_at + ?2) / ?3) * ?3 - ?2,
                     COALESCE(SUM(o.raw_tokens), 0),
                     COALESCE(SUM(o.delivered_tokens), 0)
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1
-               AND CASE WHEN ?4 = '__unknown__'
-                        THEN COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''
-                        ELSE COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ?4
-                   END
+               AND ({filter})
              GROUP BY 1
              ORDER BY 1"
-        } else {
-            "SELECT ((created_at + ?2) / ?3) * ?3 - ?2,
-                    COALESCE(SUM(raw_tokens), 0),
-                    COALESCE(SUM(delivered_tokens), 0)
-             FROM observations
-             WHERE created_at >= ?1
-             GROUP BY 1
-             ORDER BY 1"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let mut points = Vec::new();
-        if let Some(model) = model {
-            let rows = stmt.query_map(params![since, tz, bucket, model], map_point)?;
-            for row in rows {
-                points.push(row?);
-            }
-        } else {
-            let rows = stmt.query_map(params![since, tz, bucket], map_point)?;
-            for row in rows {
-                points.push(row?);
-            }
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let iter = params_from_iter(
+            [
+                rusqlite::types::Value::from(since),
+                rusqlite::types::Value::from(tz),
+                rusqlite::types::Value::from(bucket),
+            ]
+            .into_iter()
+            .chain(binds.into_iter().map(Into::into)),
+        );
+        for row in stmt.query_map(iter, map_point)? {
+            points.push(row?);
         }
         Ok(points)
     }
@@ -143,33 +174,16 @@ impl Store {
         since: i64,
         model: Option<&str>,
     ) -> Result<Vec<(String, TokenTotals)>> {
+        let owned = model.map(|m| vec![m.to_string()]);
+        self.dashboard_by_harness_for(since, owned.as_deref())
+    }
+
+    pub fn dashboard_by_harness_for(
+        &self,
+        since: i64,
+        models: Option<&[String]>,
+    ) -> Result<Vec<(String, TokenTotals)>> {
         let conn = self.reader();
-        let sql = if model.is_some() {
-            "SELECT COALESCE(s.harness, 'unknown'),
-                    COALESCE(SUM(o.raw_tokens), 0),
-                    COALESCE(SUM(o.delivered_tokens), 0),
-                    COALESCE(SUM(o.avoided_tokens), 0),
-                    COALESCE(SUM(o.refetched_tokens), 0)
-             FROM observations o
-             LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.created_at >= ?1
-               AND CASE WHEN ?2 = '__unknown__'
-                        THEN COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''
-                        ELSE COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ?2
-                   END
-             GROUP BY 1"
-        } else {
-            "SELECT COALESCE(s.harness, 'unknown'),
-                    COALESCE(SUM(o.raw_tokens), 0),
-                    COALESCE(SUM(o.delivered_tokens), 0),
-                    COALESCE(SUM(o.avoided_tokens), 0),
-                    COALESCE(SUM(o.refetched_tokens), 0)
-             FROM observations o
-             LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.created_at >= ?1
-             GROUP BY 1"
-        };
-        let mut stmt = conn.prepare(sql)?;
         let map = |r: &rusqlite::Row<'_>| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -181,14 +195,83 @@ impl Store {
                 },
             ))
         };
-        let rows = if let Some(model) = model {
-            stmt.query_map(params![since, model], map)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        } else {
-            stmt.query_map(params![since], map)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
+        let Some(models) = models.filter(|m| !m.is_empty()) else {
+            let mut stmt = conn.prepare(
+                "SELECT COALESCE(s.harness, 'unknown'),
+                        COALESCE(SUM(o.raw_tokens), 0),
+                        COALESCE(SUM(o.delivered_tokens), 0),
+                        COALESCE(SUM(o.avoided_tokens), 0),
+                        COALESCE(SUM(o.refetched_tokens), 0)
+                 FROM observations o
+                 LEFT JOIN sessions s ON s.id = o.session_id
+                 WHERE o.created_at >= ?1
+                 GROUP BY 1",
+            )?;
+            return stmt
+                .query_map(params![since], map)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into);
         };
+        let (filter, binds) = model_filter_clause(models);
+        let sql = format!(
+            "SELECT COALESCE(s.harness, 'unknown'),
+                    COALESCE(SUM(o.raw_tokens), 0),
+                    COALESCE(SUM(o.delivered_tokens), 0),
+                    COALESCE(SUM(o.avoided_tokens), 0),
+                    COALESCE(SUM(o.refetched_tokens), 0)
+             FROM observations o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.created_at >= ?1
+               AND ({filter})
+             GROUP BY 1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let iter = params_from_iter(
+            std::iter::once(rusqlite::types::Value::from(since))
+                .chain(binds.into_iter().map(Into::into)),
+        );
+        let rows = stmt
+            .query_map(iter, map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+}
+
+fn model_filter_clause(models: &[String]) -> (String, Vec<String>) {
+    let include_unknown = models.iter().any(|m| m == "__unknown__");
+    let named: Vec<String> = models
+        .iter()
+        .filter(|m| m.as_str() != "__unknown__")
+        .cloned()
+        .collect();
+    match (include_unknown, named.is_empty()) {
+        (true, true) => (
+            "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''".into(),
+            Vec::new(),
+        ),
+        (true, false) => {
+            let placeholders = vec!["?"; named.len()].join(", ");
+            (
+                format!(
+                    "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = '' \
+                     OR COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') IN ({placeholders})"
+                ),
+                named,
+            )
+        }
+        (false, _) => {
+            let placeholders = vec!["?"; named.len().max(1)].join(", ");
+            if named.is_empty() {
+                ("0".into(), Vec::new())
+            } else {
+                (
+                    format!(
+                        "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') IN ({placeholders})"
+                    ),
+                    named,
+                )
+            }
+        }
     }
 }
 
@@ -270,5 +353,9 @@ mod tests {
             (unknown.raw, unknown.delivered, unknown.avoided),
             (50, 20, 30)
         );
+        let both = store
+            .dashboard_totals_for(0, Some(&["gpt-5".into(), "__unknown__".into()]))
+            .unwrap();
+        assert_eq!(both.raw, 150);
     }
 }

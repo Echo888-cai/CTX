@@ -38,13 +38,27 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-One line. Uses a GitHub Release binary when a `v*` tag exists; otherwise it installs Rust and builds locally.
+Download from **[GitHub Releases](https://github.com/Echo888-cai/CTX/releases)** — pick the tarball for your OS (`ctx-aarch64-apple-darwin.tar.gz`, `ctx-x86_64-apple-darwin.tar.gz`, `ctx-x86_64-unknown-linux-gnu.tar.gz`, …) or the Windows `.exe`.
+
+One line (macOS / Linux). Pulls `https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz`, then runs `ctx init`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
 ```
 
-Always works from source:
+Then:
+
+```bash
+ctx setup --wizard          # detect harnesses and pick a budget
+ctx app                     # dashboard — today's tokens kept out of the model
+ctx app --install-service   # optional: start the dashboard at login
+```
+
+**macOS app** (Dock + dashboard window + menu bar): after the CLI is installed, `ctx app --install-app`. Or download `CTX-macos-aarch64-apple-darwin.zip` / `CTX-macos-x86_64-apple-darwin.zip` from the same Releases page, unzip, and drag `CTX.app` to Applications.
+
+The big number is **avoided tokens**. Raw context stayed on disk. `ctx status` is the same data in the terminal.
+
+From source, if you prefer to build:
 
 ```bash
 cargo install --git https://github.com/Echo888-cai/CTX --locked --force ctx-cli
@@ -69,17 +83,7 @@ docker build -t ctx .
 docker run --rm -v "$HOME/.ctx:/ctx" -e CTX_HOME=/ctx ctx status
 ```
 
-Then:
-
-```bash
-ctx app                 # dashboard — today's tokens kept out of the model
-ctx app --install-service   # optional: start it at login
-ctx setup --wizard      # detect harnesses and pick a budget
-```
-
-The big number is **avoided tokens**. Raw context stayed on disk. `ctx status` is the same data in the terminal.
-
-After you push a `v*` tag, the release workflow publishes tarballs and `ghcr.io/echo888-cai/ctx`. Homebrew can then use `dist/homebrew/ctx.rb`.
+Homebrew: `dist/homebrew/ctx.rb` points at the GitHub Release tarballs. Images: `ghcr.io/echo888-cai/ctx`.
 
 ## What the model sees
 

@@ -11,6 +11,7 @@ mod db;
 mod error;
 mod ledger;
 mod metrics;
+pub use metrics::{ModelRow, SeriesPoint};
 mod observe;
 mod paths;
 mod pool;
