@@ -75,12 +75,12 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
-          generate_release_notes: true
+          generate_release_notes: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
       - uses: softprops/action-gh-release@v2
         if: env.APP_ASSET != ''
         with:
           files: ${{ env.APP_ASSET }}
-          generate_release_notes: true
+          generate_release_notes: false
 
   docker:
     needs: build
