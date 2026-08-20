@@ -70,8 +70,15 @@ jobs:
         shell: bash
         run: |
           bash apps/macos/build.sh
-          ditto -c -k --keepParent apps/macos/dist/CTX.app "CTX-macos-${{ matrix.target }}.zip"
-          echo "APP_ASSET=CTX-macos-${{ matrix.target }}.zip" >> "$GITHUB_ENV"
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            NAME=CTX-macOS-arm64
+          else
+            NAME=CTX-macOS-x86_64
+          fi
+          ditto -c -k --keepParent apps/macos/dist/CTX.app "${NAME}.zip"
+          cp apps/macos/dist/CTX.dmg "${NAME}.dmg"
+          echo "APP_ASSET=${NAME}.dmg" >> "$GITHUB_ENV"
+          echo "APP_ZIP=${NAME}.zip" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
@@ -79,7 +86,9 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: env.APP_ASSET != ''
         with:
-          files: ${{ env.APP_ASSET }}
+          files: |
+            ${{ env.APP_ASSET }}
+            ${{ env.APP_ZIP }}
           generate_release_notes: false
 
   docker:

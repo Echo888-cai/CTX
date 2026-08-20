@@ -38,9 +38,11 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-从 **[GitHub Releases](https://github.com/Echo888-cai/CTX/releases)** 下载：按系统选 tarball（`ctx-aarch64-apple-darwin.tar.gz`、`ctx-x86_64-apple-darwin.tar.gz`、`ctx-x86_64-unknown-linux-gnu.tar.gz` …），Windows 下 `.exe`。
+**macOS：** 下载 **[CTX-macOS-arm64.dmg](https://github.com/Echo888-cai/CTX/releases/latest/download/CTX-macOS-arm64.dmg)**（Intel 用 `CTX-macOS-x86_64.dmg`）。打开后把 **CTX.app** 拖进「应用程序」。不要双击 `ctx-aarch64-apple-darwin`——那是命令行文件，系统会拦截。
 
-一行（macOS / Linux）。拉取 `https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz`，然后跑 `ctx init`：
+第一次打开若提示无法验证：按住 Control 点 CTX.app → 打开。
+
+命令行（macOS / Linux），Mac 上会顺便装好 `CTX.app`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
@@ -54,7 +56,7 @@ ctx app                     # 仪表盘：今天挡在模型外面的 token
 ctx app --install-service   # 可选：登录后自动开仪表盘
 ```
 
-**macOS 应用**（Dock + 仪表盘窗口 + 菜单栏）：装好 CLI 后执行 `ctx app --install-app`。也可以在同一 Releases 页下载 `CTX-macos-aarch64-apple-darwin.zip` / `CTX-macos-x86_64-apple-darwin.zip`，解压后把 `CTX.app` 拖进应用程序。
+Linux / Windows 的 CLI 在同一页 [Releases](https://github.com/Echo888-cai/CTX/releases)：`ctx-*-linux-*.tar.gz` 或 `ctx-x86_64-pc-windows-msvc.exe`。
 
 最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
 

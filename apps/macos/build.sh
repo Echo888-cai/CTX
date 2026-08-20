@@ -16,6 +16,48 @@ need_cmd() {
 
 need_cmd swiftc
 need_cmd xcrun
+need_cmd hdiutil
+
+package_dmg() {
+  local vol="Install CTX"
+  local final rw stage mount
+  final="$(cd "$(dirname "$DIST")" && pwd)/CTX.dmg"
+  rw="${final%.dmg}.rw.dmg"
+  stage="$(mktemp -d)"
+
+  cp -R "$DIST" "$stage/CTX.app"
+  ln -s /Applications "$stage/Applications"
+
+  rm -f "$rw" "$final"
+  hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDRW "$rw" >/dev/null
+  rm -rf "$stage"
+
+  mount="$(hdiutil attach -readwrite -noverify -noautoopen "$rw" | grep -oE '/Volumes/.+$' | tail -1)"
+  osascript >/dev/null 2>&1 <<EOF || true
+tell application "Finder"
+  tell disk "$vol"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set bounds of container window to {280, 140, 900, 520}
+    set arrangement of icon view options of container window to not arranged
+    set icon size of icon view options of container window to 104
+    set position of item "CTX.app" of container window to {150, 180}
+    set position of item "Applications" of container window to {430, 180}
+    close
+    open
+    delay 1
+    close
+  end tell
+end tell
+EOF
+  sync
+  hdiutil detach "$mount" >/dev/null
+  hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 -o "$final" >/dev/null
+  rm -f "$rw"
+  say "packed $final"
+}
 
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 ARCH="$(uname -m)"
@@ -69,6 +111,7 @@ if command -v codesign >/dev/null 2>&1; then
 fi
 
 say "built $DIST"
+package_dmg
 
 if [ "${1:-}" = "--install" ]; then
   pkill -f 'Applications/CTX.app/Contents/MacOS/CTX' 2>/dev/null || true

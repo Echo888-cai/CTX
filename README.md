@@ -38,9 +38,11 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-Download from **[GitHub Releases](https://github.com/Echo888-cai/CTX/releases)** — pick the tarball for your OS (`ctx-aarch64-apple-darwin.tar.gz`, `ctx-x86_64-apple-darwin.tar.gz`, `ctx-x86_64-unknown-linux-gnu.tar.gz`, …) or the Windows `.exe`.
+**macOS:** download **[CTX-macOS-arm64.dmg](https://github.com/Echo888-cai/CTX/releases/latest/download/CTX-macOS-arm64.dmg)** (Intel: `CTX-macOS-x86_64.dmg`). Open the disk image and **drag CTX.app into Applications**. Do not double-click `ctx-aarch64-apple-darwin` — that is the command-line binary, and Gatekeeper will block it.
 
-One line (macOS / Linux). Pulls `https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz`, then runs `ctx init`:
+First launch, if macOS asks: Control-click CTX.app → Open.
+
+CLI (macOS / Linux), which also installs `CTX.app` on Mac:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
@@ -54,7 +56,7 @@ ctx app                     # dashboard — today's tokens kept out of the model
 ctx app --install-service   # optional: start the dashboard at login
 ```
 
-**macOS app** (Dock + dashboard window + menu bar): after the CLI is installed, `ctx app --install-app`. Or download `CTX-macos-aarch64-apple-darwin.zip` / `CTX-macos-x86_64-apple-darwin.zip` from the same Releases page, unzip, and drag `CTX.app` to Applications.
+Linux / Windows CLI: same [Releases](https://github.com/Echo888-cai/CTX/releases) page — `ctx-*-linux-*.tar.gz` or `ctx-x86_64-pc-windows-msvc.exe`.
 
 The big number is **avoided tokens**. Raw context stayed on disk. `ctx status` is the same data in the terminal.
 

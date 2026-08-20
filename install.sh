@@ -93,16 +93,55 @@ try_prebuilt() {
   esac
 }
 
+install_mac_app() {
+  [ "$(uname -s)" = Darwin ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  command -v ditto >/dev/null 2>&1 || return 0
+  local name url tmp dest
+  case "$(uname -m)" in
+    arm64) name=CTX-macOS-arm64 ;;
+    x86_64) name=CTX-macOS-x86_64 ;;
+    *) return 0 ;;
+  esac
+  tmp="$(mktemp -d)"
+  url="https://github.com/Echo888-cai/CTX/releases/latest/download/${name}.zip"
+  if ! curl -fsSL "$url" -o "$tmp/ctx.zip"; then
+    rm -rf "$tmp"
+    return 0
+  fi
+  mkdir -p "$tmp/out" "$HOME/Applications"
+  ditto -x -k "$tmp/ctx.zip" "$tmp/out" 2>/dev/null || true
+  if [ ! -d "$tmp/out/CTX.app" ]; then
+    rm -rf "$tmp"
+    return 0
+  fi
+  dest="$HOME/Applications/CTX.app"
+  rm -rf "$dest"
+  cp -R "$tmp/out/CTX.app" "$dest"
+  xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
+  if [ -w /Applications ]; then
+    rm -rf /Applications/CTX.app
+    cp -R "$tmp/out/CTX.app" /Applications/CTX.app
+    xattr -dr com.apple.quarantine /Applications/CTX.app 2>/dev/null || true
+    dest="/Applications/CTX.app"
+  fi
+  rm -rf "$tmp"
+  say "installed CTX.app → $dest"
+  open "$dest" >/dev/null 2>&1 || true
+}
+
   if try_prebuilt; then
     ensure_path_hint
     say "creating ~/.ctx and wiring Claude / Cursor"
     ctx init
+    install_mac_app
     cat <<'EOF'
 
 CTX is on this machine.
 
+  Mac: drag CTX.app from CTX-macOS-arm64.dmg into Applications
   ctx app                 open today's avoided-token dashboard
-  ctx app --install-app   macOS: Dock app (optional)
+  ctx app --install-app   rebuild the Dock app from this tree
   ctx app --install-service   start the dashboard at login (macOS / Linux)
   ctx status              same numbers in the terminal
   ctx doctor              wiring check
@@ -119,12 +158,14 @@ EOF
   cargo install --path "$SRC/apps/cli" --locked --force
   say "creating ~/.ctx and wiring Claude / Cursor"
   ctx init
+  install_mac_app
   cat <<'EOF'
 
 CTX is on this machine.
 
+  Mac: drag CTX.app from CTX-macOS-arm64.dmg into Applications
   ctx app                 open today's avoided-token dashboard
-  ctx app --install-app   macOS: Dock app (optional)
+  ctx app --install-app   rebuild the Dock app from this tree
   ctx app --install-service   start the dashboard at login (macOS / Linux)
   ctx status              same numbers in the terminal
   ctx doctor              wiring check
