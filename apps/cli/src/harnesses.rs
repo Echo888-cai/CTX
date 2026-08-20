@@ -53,7 +53,7 @@ const SPECS: &[Spec] = &[
     Spec {
         id: "codex",
         name: "Codex",
-        form: "cli",
+        form: "desktop+cli",
         integration: "mcp",
         capability: "retrieval",
         config_paths: &["~/.codex/config.toml"],

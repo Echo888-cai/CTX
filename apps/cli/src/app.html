@@ -36,11 +36,10 @@
     min-height: 138px; display: flex; align-items: flex-start; justify-content: space-between;
     gap: 36px; padding-top: 46px;
   }
-  .brand-group { min-width: 0; display: flex; align-items: center; gap: 18px; }
+  .brand-group { min-width: 0; display: flex; align-items: baseline; gap: 16px; }
   .brand { display: block; width: 210px; flex: 0 0 210px; line-height: 0; }
   .brand img { display: block; width: 100%; height: auto; background: transparent; }
-  .brand-rule { width: 1px; height: 28px; background: #2f332f; flex: 0 0 auto; }
-  .slogan { color: #272a27; font-size: 16px; letter-spacing: .04em; white-space: nowrap; }
+  .slogan { color: var(--muted); font-size: 15px; letter-spacing: .02em; white-space: nowrap; }
   .controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
   .status {
     display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px;
@@ -147,17 +146,24 @@
   .kpi-value small { margin-left: 3px; font-size: 26px; }
   .kpi-label { margin-top: 14px; color: #272a27; font-size: 16px; }
   .kpi-sub { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .composition { padding: 34px 0 36px; border-top: 1px solid var(--line); }
+  .composition { padding: 34px 0 36px; border-top: 1px solid var(--line); position: relative; }
   .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
   h2 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.025em; }
   .range-label { color: var(--muted); font-size: 15px; white-space: nowrap; }
-  .comp-bar { display: flex; gap: 2px; height: 14px; border-radius: 7px; overflow: hidden; background: var(--wash); position: relative; }
-  .comp-seg { height: 100%; min-width: 3px; transition: flex-grow .3s ease; cursor: default; }
+  .comp-bar { display: flex; gap: 2px; height: 14px; border-radius: 7px; overflow: hidden; background: var(--wash); }
+  .comp-seg { height: 100%; min-width: 3px; transition: flex-grow .4s cubic-bezier(.22,.8,.2,1), opacity .18s ease, filter .18s ease; cursor: default; }
+  .comp-bar:hover .comp-seg { opacity: .42; }
+  .comp-bar .comp-seg:hover, .comp-bar .comp-seg.on { opacity: 1; filter: saturate(1.08); }
   .comp-legend {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 2px 28px; margin: 18px 0 0; padding: 0; list-style: none;
   }
-  .comp-legend li { display: grid; grid-template-columns: 10px minmax(0,1fr) auto 44px; align-items: center; gap: 10px; height: 30px; font-size: 13px; }
+  .comp-legend li {
+    display: grid; grid-template-columns: 10px minmax(0,1fr) auto 44px; align-items: center; gap: 10px;
+    height: 30px; margin: 0 -8px; padding: 0 8px; border-radius: 8px; font-size: 13px;
+    cursor: default; transition: background .18s ease;
+  }
+  .comp-legend li.on { background: var(--wash); }
   .comp-legend .chip { width: 10px; height: 10px; border-radius: 3px; }
   .comp-legend .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .comp-legend .tokens { color: var(--save-text); font-variant-numeric: tabular-nums; }
@@ -190,6 +196,18 @@
   .tip b { font-weight: 600; }
   .tip .row { display: flex; justify-content: space-between; gap: 16px; font-variant-numeric: tabular-nums; }
   .tip .row span:first-child { color: rgba(255, 255, 255, .68); }
+  .comp-tip {
+    position: absolute; z-index: 6; min-width: 168px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink);
+    font-size: 12px; line-height: 1.55; pointer-events: none;
+    box-shadow: 0 14px 36px rgba(17, 19, 17, .12);
+    opacity: 0; transform: translateY(6px);
+    transition: opacity .18s ease, transform .18s cubic-bezier(.22,.8,.2,1);
+  }
+  .comp-tip.show { opacity: 1; transform: translateY(0); }
+  .comp-tip b { font-weight: 600; }
+  .comp-tip .row { display: flex; justify-content: space-between; gap: 16px; font-variant-numeric: tabular-nums; }
+  .comp-tip .row span:first-child { color: var(--muted); }
   .chart { position: relative; height: 300px; }
   .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
   .grid-line { stroke: var(--grid); stroke-width: 1; stroke-dasharray: 4 5; }
@@ -215,11 +233,16 @@
   .more { margin-top: 8px; border: 0; background: transparent; color: var(--kept-text); cursor: pointer; font-size: 13px; }
   .footer { min-height: 86px; display: flex; align-items: center; gap: 32px; color: var(--muted); font-size: 13px; }
   .footer .sep { color: var(--quiet); }
-  .overlay { position: fixed; inset: 0; background: rgba(17,19,17,.28); z-index: 40; }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(17,19,17,.22); z-index: 40;
+    opacity: 0; pointer-events: none;
+    transition: opacity .28s ease;
+  }
+  .overlay.show { opacity: 1; pointer-events: auto; }
   .drawer {
     position: fixed; inset: 0 0 0 auto; width: 480px; z-index: 41;
     background: var(--paper); box-shadow: -18px 0 48px rgba(17,19,17,.14);
-    transform: translateX(100%); transition: transform .22s cubic-bezier(.2,.8,.2,1);
+    transform: translateX(100%); transition: transform .36s cubic-bezier(.22,.82,.2,1);
     display: flex; flex-direction: column; overflow: hidden;
   }
   .drawer.open { transform: translateX(0); }
@@ -235,8 +258,8 @@
   .live { color: var(--quiet); font-size: 12px; margin-top: 14px; }
   .switch { position: relative; width: 51px; height: 31px; flex: 0 0 auto; }
   .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-  .switch i { position: absolute; inset: 0; border-radius: 999px; background: #d7dbd7; transition: background .2s ease; }
-  .switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(17,19,17,.2); transition: transform .2s ease; }
+  .switch i { position: absolute; inset: 0; border-radius: 999px; background: #d7dbd7; transition: background .24s cubic-bezier(.22,.8,.2,1); }
+  .switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(17,19,17,.2); transition: transform .28s cubic-bezier(.34,1.3,.48,1); }
   .switch input:checked + i { background: var(--save-600); }
   .switch input:checked + i::after { transform: translateX(20px); }
   .switch input:focus-visible + i { box-shadow: 0 0 0 3px rgba(79,169,123,.28); }
@@ -246,8 +269,16 @@
   .tool-form { color: var(--quiet); font-size: 12px; font-weight: 450; margin-left: 8px; }
   .tool-status { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.4; }
   .tool-status.off { color: var(--quiet); }
-  .uninstall-link { display: inline-block; margin-top: 8px; border: 0; background: transparent; color: var(--quiet); cursor: pointer; font-size: 13px; padding: 0; }
-  .uninstall-link:hover { color: #8a3b32; }
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; z-index: 50;
+    min-width: 196px; max-width: min(420px, calc(100% - 40px));
+    padding: 12px 18px; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--paper); color: var(--ink); font-size: 13px; line-height: 1.45;
+    box-shadow: 0 18px 48px rgba(17,19,17,.16);
+    opacity: 0; pointer-events: none; transform: translate(-50%, 10px);
+    transition: opacity .28s cubic-bezier(.22,.8,.2,1), transform .28s cubic-bezier(.22,.8,.2,1);
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .72; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
   @media (max-width: 1179px) {
@@ -266,7 +297,7 @@
   @media (max-width: 759px) {
     .dashboard { width: calc(100% - 28px); }
     .topbar { min-height: 0; flex-direction: column; gap: 24px; padding: 28px 0 12px; }
-    .brand-rule, .slogan { display: none; }
+    .slogan { display: none; }
     .kpis { grid-template-columns: 1fr; }
     .kpi, .kpi:first-child, .kpi:last-child { padding: 18px 0; border-left: 0; }
     .kpi + .kpi { border-top: 1px solid var(--line); }
@@ -288,8 +319,7 @@
         <a class="brand" href="/" aria-label="CTX 首页">
           <img src="/assets/ctx-wordmark.png" alt="CTX" width="844" height="229" />
         </a>
-        <span class="brand-rule" aria-hidden="true"></span>
-        <span class="slogan">「让重要的，自然抵达。」</span>
+        <span class="slogan">让重要的，自然抵达。</span>
       </div>
       <div class="controls">
         <div class="status" id="status"><span class="status-dot"></span><span id="state">运行中</span></div>
@@ -382,7 +412,7 @@
       <span>更新时间：<span id="updated">—</span></span><span class="sep">•</span><span>本周已节省 <span id="week-saved">—</span> tokens</span>
     </footer>
   </main>
-  <div class="overlay" id="overlay" hidden></div>
+  <div class="overlay" id="overlay"></div>
   <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
     <div class="drawer-head"><h2 id="drawer-title">设置</h2><button type="button" class="drawer-close" id="drawer-close" aria-label="关闭">✕</button></div>
     <div class="drawer-body">
@@ -394,16 +424,9 @@
         <p class="hint">打开后，有钩子的工具会自动压缩上下文；仅 MCP 的工具要等模型主动检索才省。</p>
         <div id="harness-list"></div>
       </section>
-      <section class="drawer-sec">
-        <div class="row-line"><span>影子模式</span><label class="switch"><input id="cfg-shadow" type="checkbox" /><i></i></label></div>
-        <p class="hint">只统计不改写，方便核对 CTX 省了多少，不改变模型收到的内容。</p>
-        <div class="live" id="health-line"></div>
-      </section>
-      <section class="drawer-sec">
-        <button type="button" class="uninstall-link" id="uninstall-btn">卸载 CTX 接入</button>
-      </section>
     </div>
   </aside>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script>
 const $ = (id) => document.getElementById(id);
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -434,7 +457,7 @@ const DEMO = {
   tools: [
     { id: "cursor", name: "Cursor", form_label: "Desktop / CLI", installed: true, enabled: true, capability: "auto", status: "hooks 已接入" },
     { id: "claude-code", name: "Claude Code", form_label: "CLI", installed: true, enabled: true, capability: "auto", status: "hooks 已接入" },
-    { id: "codex", name: "Codex", form_label: "CLI", installed: false, enabled: true, capability: "retrieval", status: "未安装" }
+    { id: "codex", name: "Codex", form_label: "Desktop / CLI", installed: false, enabled: true, capability: "retrieval", status: "未安装" }
   ],
   pages: 0, store_bytes: 0, snapshots: []
 };
@@ -547,6 +570,7 @@ function bindChartTips(host, rows) {
   });
 }
 function renderComposition(rows, totals) {
+  const host = document.querySelector(".composition");
   const bar = $("comp-bar");
   const legend = $("comp-legend");
   const list = (Array.isArray(rows) && rows.length ? rows : DEMO.composition).filter((r) => Number(r.tokens) > 0);
@@ -558,18 +582,38 @@ function renderComposition(rows, totals) {
     return { ...row, color, share: Number(row.tokens || 0) / total };
   });
   bar.innerHTML = painted.map((r, i) => `<div class="comp-seg" data-i="${i}" style="flex:${Math.max(r.share, 0.004)} 0 0;background:${r.color}"></div>`).join("");
-  legend.innerHTML = painted.map((r) => `<li class="${r.kept ? "kept" : ""}"><i class="chip" style="background:${r.color}"></i><span class="name">${esc(r.label)}</span><span class="tokens">${compact(r.tokens)}</span><span class="share">${(r.share * 100).toFixed(1)}%</span></li>`).join("");
+  legend.innerHTML = painted.map((r, i) => `<li class="${r.kept ? "kept" : ""}" data-i="${i}"><i class="chip" style="background:${r.color}"></i><span class="name">${esc(r.label)}</span><span class="tokens">${compact(r.tokens)}</span><span class="share">${(r.share * 100).toFixed(1)}%</span></li>`).join("");
   bar.setAttribute("aria-label", `原文 ${compact(total)}，其中已节省 ${compact(saved)}`);
-  let tip = bar.querySelector(".tip");
-  if (!tip) { tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true; bar.appendChild(tip); }
-  bar.querySelectorAll(".comp-seg").forEach((seg) => {
-    seg.onmouseenter = () => {
-      const r = painted[Number(seg.dataset.i)];
-      if (!r) return;
-      tip.innerHTML = `<b>${esc(r.label)}</b><div class="row"><span>tokens</span><span>${compact(r.tokens)}</span></div><div class="row"><span>占原文</span><span>${(r.share * 100).toFixed(1)}%</span></div>`;
-      tip.hidden = false;
-    };
-    seg.onmouseleave = () => { tip.hidden = true; };
+  let tip = host.querySelector(".comp-tip");
+  if (!tip) { tip = document.createElement("div"); tip.className = "comp-tip"; host.appendChild(tip); }
+  const segs = bar.querySelectorAll(".comp-seg");
+  const items = legend.querySelectorAll("li");
+  const highlight = (index) => {
+    const r = painted[index];
+    if (!r) return;
+    segs.forEach((seg, i) => seg.classList.toggle("on", i === index));
+    items.forEach((li, i) => li.classList.toggle("on", i === index));
+    tip.innerHTML = `<b>${esc(r.label)}</b><div class="row"><span>tokens</span><span>${compact(r.tokens)}</span></div><div class="row"><span>占原文</span><span>${(r.share * 100).toFixed(1)}%</span></div>`;
+    tip.classList.add("show");
+    const box = (segs[index] || bar).getBoundingClientRect();
+    const hostBox = host.getBoundingClientRect();
+    const width = tip.offsetWidth || 168;
+    const left = box.left - hostBox.left + box.width / 2 - width / 2;
+    tip.style.left = `${Math.max(0, Math.min(hostBox.width - width, left))}px`;
+    tip.style.top = `${box.bottom - hostBox.top + 10}px`;
+  };
+  const clear = () => {
+    segs.forEach((seg) => seg.classList.remove("on"));
+    items.forEach((li) => li.classList.remove("on"));
+    tip.classList.remove("show");
+  };
+  segs.forEach((seg) => {
+    seg.onmouseenter = () => highlight(Number(seg.dataset.i));
+    seg.onmouseleave = clear;
+  });
+  items.forEach((li) => {
+    li.onmouseenter = () => highlight(Number(li.dataset.i));
+    li.onmouseleave = clear;
   });
 }
 function renderSources(rows) {
@@ -590,7 +634,15 @@ function renderSources(rows) {
     </div>`;
   }).join("") || `<div class="kpi-sub">暂无来源数据</div>`;
   $("source-rows").querySelectorAll("[data-setup]").forEach((btn) => {
-    btn.onclick = () => post(`/api/setup?target=${encodeURIComponent(btn.dataset.setup)}`).then(() => { loadSettings(); refresh(true); });
+    btn.onclick = async () => {
+      const id = btn.dataset.setup;
+      toast("正在接入…");
+      const setup = await post(`/api/setup?target=${encodeURIComponent(id)}`);
+      if (setup.ok === false) { toast(setup.error || "接入失败"); return; }
+      toast("已开启");
+      loadSettings();
+      refresh(true);
+    };
   });
 }
 function renderDetail(data) {
@@ -648,7 +700,7 @@ function render(data) {
   state.last = data;
   const totals = data.totals || DEMO.totals;
   $("status").classList.toggle("off", data.enabled === false);
-  $("state").textContent = data.enabled === false ? "已暂停" : (data.shadow ? "影子模式" : "运行中");
+  $("state").textContent = data.enabled === false ? "已暂停" : "运行中";
   tween($("pct"), totals.reduction_pct, (n) => String(Math.round(n)));
   tween($("saved-tokens"), totals.net_avoided ?? totals.avoided, compact);
   $("saved-usd").innerHTML = `${esc(money(data.avoided_usd))}${data.avoided_usd_estimated ? '<span class="est" title="未上报具体模型，按默认官网价估算">估</span>' : ""}`;
@@ -698,9 +750,18 @@ async function post(url, body) {
   const res = await fetch(url, opts);
   return res.json().catch(() => ({ ok: false }));
 }
+let toastTimer = 0;
+function toast(message) {
+  const el = $("toast");
+  if (!el || !message) return;
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2400);
+}
 function openDrawer(anchor) {
   state.drawer = true;
-  $("overlay").hidden = false;
+  $("overlay").classList.add("show");
   $("drawer").classList.add("open");
   $("settings-btn").setAttribute("aria-expanded", "true");
   loadSettings().then(() => {
@@ -710,7 +771,7 @@ function openDrawer(anchor) {
 }
 function closeDrawer() {
   state.drawer = false;
-  $("overlay").hidden = true;
+  $("overlay").classList.remove("show");
   $("drawer").classList.remove("open");
   $("settings-btn").focus();
   refresh();
@@ -727,30 +788,48 @@ function harnessRow(h) {
   </div>`;
 }
 async function loadSettings() {
-  const [h, c, health] = await Promise.all([
+  const [h, c] = await Promise.all([
     fetch("/api/harnesses").then((r) => r.json()).catch(() => ({})),
-    fetch("/api/config").then((r) => r.json()).catch(() => ({})),
-    fetch("/api/health").then((r) => r.json()).catch(() => ({}))
+    fetch("/api/config").then((r) => r.json()).catch(() => ({}))
   ]);
   const rows = h.harnesses || [];
   $("harness-list").innerHTML = rows.map(harnessRow).join("");
   $("cfg-enabled").checked = c.enabled !== false;
-  $("cfg-shadow").checked = !!c.shadow_mode;
-  const p95 = Math.round(health.hook_p95_ms || 0);
-  $("health-line").textContent = p95 ? `钩子 p95 ${p95}ms` : "";
   bindHarnessActions();
 }
 function bindHarnessActions() {
   document.querySelectorAll("[data-toggle]").forEach((el) => {
-    el.onchange = () => {
+    el.onchange = async () => {
       const enable = el.checked;
       const id = el.dataset.toggle;
-      const row = (state.last && state.last.tools || []).find((t) => t.id === id);
-      if (enable && row && !row.installed) {
-        post(`/api/setup?target=${encodeURIComponent(id)}`).then(() => post(`/api/harness?id=${encodeURIComponent(id)}&enabled=1`)).then(() => { loadSettings(); refresh(true); });
-        return;
+      const row = ((state.last && state.last.tools) || []).find((t) => t.id === id) || {};
+      const name = row.name || id;
+      el.disabled = true;
+      try {
+        if (enable && !row.installed) {
+          toast(`正在接入 ${name}…`);
+          const setup = await post(`/api/setup?target=${encodeURIComponent(id)}`);
+          if (setup.ok === false) {
+            el.checked = false;
+            toast(setup.error || `${name} 接入失败`);
+            return;
+          }
+          await post(`/api/harness?id=${encodeURIComponent(id)}&enabled=1`);
+          toast(`${name} 已开启`);
+        } else {
+          const result = await post(`/api/harness?id=${encodeURIComponent(id)}&enabled=${enable ? 1 : 0}`);
+          if (result.ok === false) {
+            el.checked = !enable;
+            toast(result.error || `${name} 切换失败`);
+            return;
+          }
+          toast(enable ? `${name} 已开启` : `${name} 已关闭`);
+        }
+        await loadSettings();
+        await refresh(true);
+      } finally {
+        el.disabled = false;
       }
-      post(`/api/harness?id=${encodeURIComponent(id)}&enabled=${enable ? 1 : 0}`).then(() => { loadSettings(); refresh(true); });
     };
   });
 }
@@ -905,11 +984,17 @@ $("overlay").addEventListener("click", closeDrawer);
 $("drawer-close").addEventListener("click", closeDrawer);
 $("kpi-harness").addEventListener("click", () => openDrawer("tools"));
 $("kpi-harness").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDrawer("tools"); } });
-$("cfg-enabled").addEventListener("change", () => post($("cfg-enabled").checked ? "/api/resume" : "/api/pause").then(() => refresh(true)));
-$("cfg-shadow").addEventListener("change", () => post("/api/config", { shadow_mode: $("cfg-shadow").checked }).then(() => refresh(true)));
-$("uninstall-btn").addEventListener("click", () => {
-  if (!confirm("确认移除本机所有 CTX 钩子 / MCP 接入？数据不会删除。")) return;
-  post("/api/uninstall?target=cursor").then(() => loadSettings());
+$("cfg-enabled").addEventListener("change", () => {
+  const on = $("cfg-enabled").checked;
+  post(on ? "/api/resume" : "/api/pause").then((result) => {
+    if (result.ok === false) {
+      $("cfg-enabled").checked = !on;
+      toast(result.error || "切换失败");
+      return;
+    }
+    toast(on ? "CTX 已开启" : "CTX 已暂停");
+    refresh(true);
+  });
 });
 render(DEMO);
 refresh();

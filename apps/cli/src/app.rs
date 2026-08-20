@@ -161,9 +161,7 @@ fn dispatch_with(
             "text/html; charset=utf-8",
             PAGE.as_bytes().to_vec(),
         ),
-        ("GET", "/assets/ctx-wordmark.png") | ("GET", "/assets/chuntingxue-wordmark.png") => {
-            ("200 OK", "image/png", WORDMARK.to_vec())
-        }
+        ("GET", "/assets/ctx-wordmark.png") => ("200 OK", "image/png", WORDMARK.to_vec()),
         ("GET", "/assets/arrow-right.png") => ("200 OK", "image/png", ARROW_RIGHT.to_vec()),
         ("GET", "/api/status") => {
             let range = match query_param(query, "range") {
@@ -717,7 +715,9 @@ mod tests {
         assert!(content_type.contains("text/html"));
         let page = String::from_utf8(body).expect("dashboard html is utf-8");
 
-        assert!(page.contains("「让重要的，自然抵达。」"));
+        assert!(page.contains("让重要的，自然抵达。"));
+        assert!(!page.contains("「让重要的"));
+        assert!(!page.contains("brand-rule"));
         assert!(page.contains("已节省"));
         assert!(page.contains("/api/status"));
         assert!(page.contains("上下文趋势"));
@@ -727,6 +727,11 @@ mod tests {
         assert!(page.contains("settings-btn"));
         assert!(page.contains("已接入"));
         assert!(page.contains("/assets/ctx-wordmark.png"));
+        assert!(page.contains("id=\"toast\""));
+        assert!(!page.contains("影子模式"));
+        assert!(!page.contains("卸载 CTX"));
+        assert!(!page.contains("cfg-shadow"));
+        assert!(!page.contains("uninstall-btn"));
         assert!(!page.contains("春庭雪"));
         assert!(!page.contains("春雪留痕"));
         assert!(!page.contains("API 等价"));
@@ -787,10 +792,14 @@ mod tests {
         assert!(!ids.contains(&"claude-desktop"), "{ids:?}");
         assert!(!ids.contains(&"windsurf"), "{ids:?}");
         assert_eq!(ids.len(), 3, "{ids:?}");
-        assert!(v["harnesses"]
+        let codex = v["harnesses"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|h| h["capability"] == "retrieval" && h["id"] == "codex"));
+            .find(|h| h["id"] == "codex")
+            .expect("codex row");
+        assert_eq!(codex["capability"], "retrieval");
+        assert_eq!(codex["form"], "desktop+cli");
+        assert_eq!(codex["form_label"], "Desktop / CLI");
     }
 }

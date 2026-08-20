@@ -35,7 +35,7 @@ pub fn init() -> anyhow::Result<()> {
     println!("  {}  Continue.dev", mark(cont));
     println!("  {}  JetBrains", mark(jetbrains));
     println!("  {}  Aider", mark(aider));
-    println!("  {}  Codex CLI", mark(codex));
+    println!("  {}  Codex", mark(codex));
     println!();
 
     if claude {
@@ -130,7 +130,7 @@ pub fn setup(target: &str) -> anyhow::Result<()> {
         }
         "codex" => {
             setup_codex()?;
-            println!("Codex CLI MCP installed. Restart Codex.");
+            println!("Codex MCP installed. Restart Codex Desktop / CLI.");
             Ok(())
         }
         "copilot" => {
@@ -186,7 +186,7 @@ pub fn wizard() -> anyhow::Result<()> {
     println!("  {}  Continue.dev", mark(cont));
     println!("  {}  JetBrains", mark(jetbrains));
     println!("  {}  Aider", mark(aider));
-    println!("  {}  Codex CLI", mark(codex));
+    println!("  {}  Codex", mark(codex));
 
     let interactive = io::stdin().is_terminal();
     let strategy = if interactive {
@@ -353,9 +353,15 @@ pub(crate) fn detect_aider() -> bool {
 }
 
 pub(crate) fn detect_codex() -> bool {
-    dirs::home_dir()
-        .map(|h| h.join(".codex").is_dir())
-        .unwrap_or(false)
+    Path::new("/Applications/Codex.app").exists()
+        || Path::new("/Applications/ChatGPT.app").exists()
+        || dirs::home_dir()
+            .map(|h| {
+                h.join("Applications").join("Codex.app").exists()
+                    || h.join("Applications").join("ChatGPT.app").exists()
+                    || h.join(".codex").is_dir()
+            })
+            .unwrap_or(false)
         || which("codex")
 }
 
