@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Dashboard filters: source → model → range; Claude/Codex model lists come from ledger only; model labels Title-Case.
+- DeepSeek V4 pricing: `deepseek-v4-pro` in catalog; flash/pro cache_read/output/write extras; DeepSeek tier rates (not generic).
+- Claude cache_write parsing avoids double-counting 1h creation; blank-model Claude observations attribute via ledger sessions.
+- Cache heat: hit % + Token 消耗 + 命中 + 账单; CC Switch–aligned token/cost math.
+
 ## 0.1.3
 
 - Dashboard ledger syncs live (~1s): Claude / Codex from provider usage, Cursor from context-window prefix inference when local `cache_read` is missing.

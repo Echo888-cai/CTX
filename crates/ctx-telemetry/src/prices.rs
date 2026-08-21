@@ -42,6 +42,36 @@ const CATALOG: &[(&str, f64, &str)] = &[
     ("gemini-2.5-flash", 0.30, "Gemini 2.5 Flash"),
     ("deepseek-chat", 0.28, "DeepSeek Chat"),
     ("deepseek-v4-flash", 0.14, "DeepSeek V4 Flash"),
+    ("deepseek-v4-pro", 0.435, "DeepSeek V4 Pro"),
+];
+
+/// Built-in cache/output rates when official cache only has bare input.
+/// DeepSeek V4: cache_write = input; flash cache_read ≈ 2% input; pro promo is listed.
+const CATALOG_EXTRAS: &[(&str, RateExtra)] = &[
+    (
+        "deepseek-chat",
+        RateExtra {
+            output: Some(0.56),
+            cache_read: Some(0.0056),
+            cache_write: Some(0.28),
+        },
+    ),
+    (
+        "deepseek-v4-flash",
+        RateExtra {
+            output: Some(0.28),
+            cache_read: Some(0.0028),
+            cache_write: Some(0.14),
+        },
+    ),
+    (
+        "deepseek-v4-pro",
+        RateExtra {
+            output: Some(0.87),
+            cache_read: Some(0.003625),
+            cache_write: Some(0.435),
+        },
+    ),
 ];
 
 const ALIASES: &[(&str, &str)] = &[
@@ -146,6 +176,9 @@ impl PriceBook {
             aliases.insert((*from).to_string(), (*to).to_string());
         }
         let mut extras = HashMap::new();
+        for (id, extra) in CATALOG_EXTRAS {
+            extras.insert((*id).to_string(), *extra);
+        }
         merge_overrides(
             &mut prices,
             &mut extras,
@@ -655,7 +688,12 @@ fn merge_models_dev(obj: &mut serde_json::Map<String, Value>, body: &str) {
                 continue;
             }
             let key = normalize(id);
-            if !catalog.iter().any(|c| c == &key) && !obj.contains_key(&key) {
+            // Catalog exact match, already-cached key, or DeepSeek date variant
+            // whose stem is in the catalog (e.g. deepseek-v4-flash-0731).
+            let in_catalog = catalog.iter().any(|c| {
+                c == &key || (c.starts_with("deepseek-") && key.starts_with(c.as_str()))
+            });
+            if !in_catalog && !obj.contains_key(&key) {
                 continue;
             }
             let mut row = serde_json::Map::new();
@@ -848,5 +886,48 @@ mod tests {
         assert_eq!(parsed.get("grok-4.6-fast"), Some(&4.0));
         assert_eq!(parsed.get("claude-4.6-sonnet"), Some(&3.0));
         assert_eq!(parsed.get("claude-sonnet-4.6"), Some(&3.0));
+    }
+
+    #[test]
+    fn deepseek_v4_pro_is_in_catalog() {
+        let (_dir, book) = book("");
+        assert_eq!(book.input_usd_per_mtok("deepseek-v4-pro"), Some(0.435));
+        assert_eq!(book.input_usd_per_mtok("deepseek/deepseek-v4-pro"), Some(0.435));
+    }
+
+    #[test]
+    fn deepseek_catalog_extras_survive_bare_official_input() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("prices.official.json"),
+            r#"{ "_meta": { "fetched_at": 1 }, "deepseek-v4-flash": 0.14 }"#,
+        )
+        .unwrap();
+        let paths = CtxPaths::from_root(dir.path().to_path_buf());
+        let book = PriceBook::load(&paths, "");
+        let rates = book.tier("deepseek-v4-flash").unwrap();
+        assert!((rates.input - 0.14).abs() < 1e-9);
+        assert!((rates.output - 0.28).abs() < 1e-9);
+        assert!((rates.cache_read - 0.0028).abs() < 1e-9);
+        assert!((rates.cache_write_5m - 0.14).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merge_models_dev_applies_deepseek_full_cost() {
+        let mut obj = serde_json::Map::new();
+        let body = r#"{
+            "deepseek": {
+                "models": {
+                    "deepseek-v4-pro": {
+                        "cost": { "input": 1.74, "output": 3.48, "cache_read": 0.145 }
+                    }
+                }
+            }
+        }"#;
+        merge_models_dev(&mut obj, body);
+        let row = obj.get("deepseek-v4-pro").unwrap();
+        assert_eq!(row["input_usd_per_mtok"], 1.74);
+        assert_eq!(row["output_usd_per_mtok"], 3.48);
+        assert_eq!(row["cache_read_usd_per_mtok"], 0.145);
     }
 }

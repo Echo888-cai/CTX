@@ -110,8 +110,12 @@ fn turn_from_value(v: &Value, session: &str, path: &Path) -> Option<LedgerTurn> 
         output_tokens: json_i64(usage, "output_tokens"),
         cache_read_tokens: json_i64(usage, "cache_read_input_tokens"),
         cache_write_5m: {
+            // When ephemeral breakdown is present (5m and/or 1h), use it only —
+            // do not fall back to cache_creation_input_tokens into write_5m while
+            // write_1h also holds the 1h slice (double-count).
             let w5 = json_i64(&cache, "ephemeral_5m_input_tokens");
-            if w5 > 0 {
+            let w1 = json_i64(&cache, "ephemeral_1h_input_tokens");
+            if w5 > 0 || w1 > 0 {
                 w5
             } else {
                 json_i64(usage, "cache_creation_input_tokens")
@@ -159,5 +163,25 @@ mod tests {
         assert_eq!(turns[0].model_base, "claude-sonnet-4-6");
         assert_eq!(turns[0].confidence, "measured");
         assert_eq!(turns[0].reasoning_tokens, 12);
+    }
+
+    #[test]
+    fn cache_write_1h_only_does_not_double_count_creation() {
+        // ephemeral_5m=0, ephemeral_1h>0, and cache_creation_input_tokens set:
+        // must put creation only in write_1h, not also into write_5m.
+        let line = r#"{"timestamp":"2026-08-18T10:24:23Z","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":1000,"cache_creation_input_tokens":500,"cache_read_input_tokens":0,"output_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500}}}}"#;
+        let turns = parse_jsonl(line, &PathBuf::from("/tmp/sess.jsonl"));
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].cache_write_5m, 0);
+        assert_eq!(turns[0].cache_write_1h, 500);
+    }
+
+    #[test]
+    fn cache_write_falls_back_to_creation_when_no_ephemeral() {
+        let line = r#"{"timestamp":"2026-08-18T10:24:23Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"cache_creation_input_tokens":80,"cache_read_input_tokens":0,"output_tokens":10}}}"#;
+        let turns = parse_jsonl(line, &PathBuf::from("/tmp/sess.jsonl"));
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].cache_write_5m, 80);
+        assert_eq!(turns[0].cache_write_1h, 0);
     }
 }

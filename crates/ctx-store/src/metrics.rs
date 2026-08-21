@@ -1,6 +1,6 @@
 //! Aggregations for the local dashboard. Kernel store stays unchanged.
 
-use rusqlite::{params, params_from_iter};
+use rusqlite::params_from_iter;
 
 use super::{Result, Store, TokenTotals};
 
@@ -22,7 +22,7 @@ pub struct ModelRow {
 impl Store {
     pub fn dashboard_totals(&self, since: i64, model: Option<&str>) -> Result<TokenTotals> {
         let owned = model.map(|m| vec![m.to_string()]);
-        self.dashboard_totals_for(since, i64::MAX, owned.as_deref())
+        self.dashboard_totals_for(since, i64::MAX, owned.as_deref(), None, None)
     }
 
     pub fn dashboard_totals_for(
@@ -30,23 +30,11 @@ impl Store {
         since: i64,
         until: i64,
         models: Option<&[String]>,
+        harnesses: Option<&[String]>,
+        sessions: Option<&[String]>,
     ) -> Result<TokenTotals> {
         let conn = self.reader();
-        let Some(models) = models.filter(|m| !m.is_empty()) else {
-            return conn
-                .query_row(
-                    "SELECT
-                        COALESCE(SUM(raw_tokens), 0),
-                        COALESCE(SUM(delivered_tokens), 0),
-                        COALESCE(SUM(avoided_tokens), 0),
-                        COALESCE(SUM(refetched_tokens), 0)
-                     FROM observations WHERE created_at >= ?1 AND created_at <= ?2",
-                    params![since, until],
-                    map_totals,
-                )
-                .map_err(Into::into);
-        };
-        let (filter, binds) = model_filter_clause(models);
+        let (extra, binds) = obs_filter_clause(models, harnesses, sessions);
         let sql = format!(
             "SELECT
                 COALESCE(SUM(o.raw_tokens), 0),
@@ -56,7 +44,7 @@ impl Store {
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1 AND o.created_at <= ?2
-               AND ({filter})"
+               AND ({extra})"
         );
         conn.query_row(
             &sql,
@@ -74,12 +62,18 @@ impl Store {
     }
 
     pub fn dashboard_models(&self, since: i64) -> Result<Vec<ModelRow>> {
-        self.dashboard_models_between(since, i64::MAX)
+        self.dashboard_models_between(since, i64::MAX, None)
     }
 
-    pub fn dashboard_models_between(&self, since: i64, until: i64) -> Result<Vec<ModelRow>> {
+    pub fn dashboard_models_between(
+        &self,
+        since: i64,
+        until: i64,
+        harnesses: Option<&[String]>,
+    ) -> Result<Vec<ModelRow>> {
         let conn = self.reader();
-        let mut stmt = conn.prepare(
+        let (extra, binds) = obs_filter_clause(None, harnesses, None);
+        let sql = format!(
             "SELECT COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '__unknown__'),
                     COUNT(DISTINCT o.session_id),
                     COALESCE(SUM(o.raw_tokens), 0),
@@ -90,10 +84,20 @@ impl Store {
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1 AND o.created_at <= ?2
+               AND ({extra})
              GROUP BY 1
-             ORDER BY SUM(o.avoided_tokens) DESC",
-        )?;
-        let rows = stmt.query_map(params![since, until], |r| {
+             ORDER BY SUM(o.avoided_tokens) DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let iter = params_from_iter(
+            [
+                rusqlite::types::Value::from(since),
+                rusqlite::types::Value::from(until),
+            ]
+            .into_iter()
+            .chain(binds.into_iter().map(Into::into)),
+        );
+        let rows = stmt.query_map(iter, |r| {
             Ok(ModelRow {
                 id: r.get(0)?,
                 sessions: r.get::<_, i64>(1)? as u64,
@@ -123,7 +127,7 @@ impl Store {
         model: Option<&str>,
     ) -> Result<Vec<SeriesPoint>> {
         let owned = model.map(|m| vec![m.to_string()]);
-        self.dashboard_series_for(since, i64::MAX, bucket, tz, owned.as_deref())
+        self.dashboard_series_for(since, i64::MAX, bucket, tz, owned.as_deref(), None, None)
     }
 
     pub fn dashboard_series_for(
@@ -133,25 +137,11 @@ impl Store {
         bucket: i64,
         tz: i64,
         models: Option<&[String]>,
+        harnesses: Option<&[String]>,
+        sessions: Option<&[String]>,
     ) -> Result<Vec<SeriesPoint>> {
         let conn = self.reader();
-        let mut points = Vec::new();
-        let Some(models) = models.filter(|m| !m.is_empty()) else {
-            let mut stmt = conn.prepare(
-                "SELECT ((created_at + ?2) / ?3) * ?3 - ?2,
-                        COALESCE(SUM(raw_tokens), 0),
-                        COALESCE(SUM(delivered_tokens), 0)
-                 FROM observations
-                 WHERE created_at >= ?1 AND created_at <= ?4
-                 GROUP BY 1
-                 ORDER BY 1",
-            )?;
-            for row in stmt.query_map(params![since, tz, bucket, until], map_point)? {
-                points.push(row?);
-            }
-            return Ok(points);
-        };
-        let (filter, binds) = model_filter_clause(models);
+        let (extra, binds) = obs_filter_clause(models, harnesses, sessions);
         let sql = format!(
             "SELECT ((o.created_at + ?2) / ?3) * ?3 - ?2,
                     COALESCE(SUM(o.raw_tokens), 0),
@@ -159,7 +149,7 @@ impl Store {
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1 AND o.created_at <= ?4
-               AND ({filter})
+               AND ({extra})
              GROUP BY 1
              ORDER BY 1"
         );
@@ -174,6 +164,7 @@ impl Store {
             .into_iter()
             .chain(binds.into_iter().map(Into::into)),
         );
+        let mut points = Vec::new();
         for row in stmt.query_map(iter, map_point)? {
             points.push(row?);
         }
@@ -186,7 +177,7 @@ impl Store {
         model: Option<&str>,
     ) -> Result<Vec<(String, TokenTotals)>> {
         let owned = model.map(|m| vec![m.to_string()]);
-        self.dashboard_by_harness_for(since, i64::MAX, owned.as_deref())
+        self.dashboard_by_harness_for(since, i64::MAX, owned.as_deref(), None, None)
     }
 
     pub fn dashboard_by_harness_for(
@@ -194,37 +185,11 @@ impl Store {
         since: i64,
         until: i64,
         models: Option<&[String]>,
+        harnesses: Option<&[String]>,
+        sessions: Option<&[String]>,
     ) -> Result<Vec<(String, TokenTotals)>> {
         let conn = self.reader();
-        let map = |r: &rusqlite::Row<'_>| {
-            Ok((
-                r.get::<_, String>(0)?,
-                TokenTotals {
-                    raw: r.get::<_, i64>(1)? as u64,
-                    delivered: r.get::<_, i64>(2)? as u64,
-                    avoided: r.get::<_, i64>(3)? as u64,
-                    refetched: r.get::<_, i64>(4).unwrap_or(0) as u64,
-                },
-            ))
-        };
-        let Some(models) = models.filter(|m| !m.is_empty()) else {
-            let mut stmt = conn.prepare(
-                "SELECT COALESCE(s.harness, 'unknown'),
-                        COALESCE(SUM(o.raw_tokens), 0),
-                        COALESCE(SUM(o.delivered_tokens), 0),
-                        COALESCE(SUM(o.avoided_tokens), 0),
-                        COALESCE(SUM(o.refetched_tokens), 0)
-                 FROM observations o
-                 LEFT JOIN sessions s ON s.id = o.session_id
-                 WHERE o.created_at >= ?1 AND o.created_at <= ?2
-                 GROUP BY 1",
-            )?;
-            return stmt
-                .query_map(params![since, until], map)?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(Into::into);
-        };
-        let (filter, binds) = model_filter_clause(models);
+        let (extra, binds) = obs_filter_clause(models, harnesses, sessions);
         let sql = format!(
             "SELECT COALESCE(s.harness, 'unknown'),
                     COALESCE(SUM(o.raw_tokens), 0),
@@ -234,7 +199,7 @@ impl Store {
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
              WHERE o.created_at >= ?1 AND o.created_at <= ?2
-               AND ({filter})
+               AND ({extra})
              GROUP BY 1"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -246,49 +211,170 @@ impl Store {
             .into_iter()
             .chain(binds.into_iter().map(Into::into)),
         );
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, String>(0)?,
+                TokenTotals {
+                    raw: r.get::<_, i64>(1)? as u64,
+                    delivered: r.get::<_, i64>(2)? as u64,
+                    avoided: r.get::<_, i64>(3)? as u64,
+                    refetched: r.get::<_, i64>(4).unwrap_or(0) as u64,
+                },
+            ))
+        };
         let rows = stmt
             .query_map(iter, map)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    pub fn reason_breakdown_for(
+        &self,
+        since: i64,
+        until: i64,
+        models: Option<&[String]>,
+        harnesses: Option<&[String]>,
+        sessions: Option<&[String]>,
+    ) -> Result<Vec<(String, u64)>> {
+        let conn = self.reader();
+        let (extra, binds) = obs_filter_clause(models, harnesses, sessions);
+        let sql = format!(
+            "SELECT o.reasons, o.avoided_tokens
+             FROM observations o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.created_at >= ?1 AND o.created_at <= ?2
+               AND ({extra})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let iter = params_from_iter(
+            [
+                rusqlite::types::Value::from(since),
+                rusqlite::types::Value::from(until),
+            ]
+            .into_iter()
+            .chain(binds.into_iter().map(Into::into)),
+        );
+        let mut acc: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        let rows = stmt.query_map(iter, |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+        })?;
+        for row in rows {
+            let (json, avoided) = row?;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&json).unwrap_or(serde_json::json!([]));
+            if let Some(arr) = parsed.as_array() {
+                if arr.is_empty() && avoided > 0 {
+                    *acc.entry("unspecified".into()).or_default() += avoided;
+                    continue;
+                }
+                for item in arr {
+                    let label = item
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unspecified");
+                    let tokens = item.get("tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    *acc.entry(label.to_string()).or_default() += tokens;
+                }
+            }
+        }
+        Ok(acc.into_iter().collect())
+    }
 }
 
-fn model_filter_clause(models: &[String]) -> (String, Vec<String>) {
+fn expand_harness_ids(harnesses: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for h in harnesses {
+        match h.as_str() {
+            "cursor" => {
+                out.push("cursor".into());
+                out.push("cursor-cli".into());
+            }
+            "claude" => {
+                out.push("claude".into());
+                out.push("claude-code".into());
+            }
+            "codex" => out.push("codex".into()),
+            other => out.push(other.to_string()),
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn harness_filter_clause(harnesses: &[String]) -> (String, Vec<String>) {
+    let named = expand_harness_ids(harnesses);
+    if named.is_empty() {
+        return ("0".into(), Vec::new());
+    }
+    let placeholders = vec!["?"; named.len()].join(", ");
+    (
+        format!("COALESCE(s.harness, '') IN ({placeholders})"),
+        named,
+    )
+}
+
+fn obs_filter_clause(
+    models: Option<&[String]>,
+    harnesses: Option<&[String]>,
+    sessions: Option<&[String]>,
+) -> (String, Vec<String>) {
+    let mut parts = Vec::new();
+    let mut binds = Vec::new();
+    if let Some(models) = models.filter(|m| !m.is_empty()) {
+        let (filter, model_binds) =
+            model_filter_clause(models, sessions.filter(|s| !s.is_empty()));
+        parts.push(format!("({filter})"));
+        binds.extend(model_binds);
+    }
+    if let Some(harnesses) = harnesses.filter(|h| !h.is_empty()) {
+        let (filter, harness_binds) = harness_filter_clause(harnesses);
+        parts.push(format!("({filter})"));
+        binds.extend(harness_binds);
+    }
+    if parts.is_empty() {
+        ("1".into(), binds)
+    } else {
+        (parts.join(" AND "), binds)
+    }
+}
+
+fn model_filter_clause(models: &[String], sessions: Option<&[String]>) -> (String, Vec<String>) {
     let include_unknown = models.iter().any(|m| m == "__unknown__");
     let named: Vec<String> = models
         .iter()
         .filter(|m| m.as_str() != "__unknown__")
         .cloned()
         .collect();
-    match (include_unknown, named.is_empty()) {
-        (true, true) => (
-            "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = ''".into(),
-            Vec::new(),
-        ),
+    let model_expr = "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '')";
+    let mut binds = Vec::new();
+    let mut model_part = match (include_unknown, named.is_empty()) {
+        (true, true) => format!("{model_expr} = ''"),
         (true, false) => {
             let placeholders = vec!["?"; named.len()].join(", ");
-            (
-                format!(
-                    "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') = '' \
-                     OR COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') IN ({placeholders})"
-                ),
-                named,
-            )
+            binds.extend(named);
+            format!("{model_expr} = '' OR {model_expr} IN ({placeholders})")
         }
         (false, _) => {
-            let placeholders = vec!["?"; named.len().max(1)].join(", ");
             if named.is_empty() {
-                ("0".into(), Vec::new())
+                "0".into()
             } else {
-                (
-                    format!(
-                        "COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '') IN ({placeholders})"
-                    ),
-                    named,
-                )
+                let placeholders = vec!["?"; named.len()].join(", ");
+                binds.extend(named);
+                format!("{model_expr} IN ({placeholders})")
             }
         }
+    };
+    // Claude Code / Codex hooks often leave model blank; attribute those
+    // observations to the selected model via ledger session ids.
+    if let Some(sessions) = sessions.filter(|s| !s.is_empty()) {
+        let placeholders = vec!["?"; sessions.len()].join(", ");
+        binds.extend(sessions.iter().cloned());
+        model_part = format!(
+            "({model_part}) OR (o.session_id IN ({placeholders}) AND {model_expr} = '')"
+        );
     }
+    (model_part, binds)
 }
 
 fn map_totals(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenTotals> {
@@ -370,8 +456,36 @@ mod tests {
             (50, 20, 30)
         );
         let both = store
-            .dashboard_totals_for(0, i64::MAX, Some(&["gpt-5".into(), "__unknown__".into()]))
+            .dashboard_totals_for(
+                0,
+                i64::MAX,
+                Some(&["gpt-5".into(), "__unknown__".into()]),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(both.raw, 150);
+    }
+
+    #[test]
+    fn dashboard_filters_by_harness() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(CtxPaths::from_root(dir.path().to_path_buf())).unwrap();
+        store.ensure_session("c1", "cursor", None).unwrap();
+        store.ensure_session("a1", "claude-code", None).unwrap();
+        add_observation(&store, "c1", 100, 40);
+        add_observation(&store, "a1", 200, 80);
+        let cursor = store
+            .dashboard_totals_for(0, i64::MAX, None, Some(&["cursor".into()]), None)
+            .unwrap();
+        assert_eq!(cursor.raw, 100);
+        let models = store
+            .dashboard_models_between(0, i64::MAX, Some(&["claude".into()]))
+            .unwrap();
+        assert!(models.iter().all(|m| {
+            m.source_harnesses
+                .iter()
+                .any(|h| h == "claude-code" || h == "claude")
+        }));
     }
 }

@@ -61,6 +61,18 @@ impl TierRates {
         }
     }
 
+    /// DeepSeek list shape: output ≈ 2× input, cache read ≈ 2% input, writes at input.
+    pub fn deepseek(input: f64) -> Self {
+        Self {
+            input,
+            output: input * 2.0,
+            cache_read: input * 0.02,
+            cache_write_5m: input,
+            cache_write_1h: input,
+            thinking: input * 2.0,
+        }
+    }
+
     pub fn for_model(model: &str, input: f64) -> Self {
         let l = model.to_ascii_lowercase();
         if l.contains("claude") || l.contains("anthropic") {
@@ -76,21 +88,27 @@ impl TierRates {
             Self::openai(input)
         } else if l.contains("grok") || l.contains("composer") {
             Self::xai(input)
+        } else if l.contains("deepseek") {
+            Self::deepseek(input)
         } else {
             Self::generic(input)
         }
     }
 
     pub fn turn_usd(&self, turn: &LedgerTurn) -> f64 {
+        // Match CC Switch CostCalculator: fresh input + output + cache read + cache creation.
         let uncached = turn.uncached_input().max(0) as f64;
-        round_usd(
-            uncached / 1_000_000.0 * self.input
-                + turn.cache_read_tokens.max(0) as f64 / 1_000_000.0 * self.cache_read
-                + turn.cache_write_5m.max(0) as f64 / 1_000_000.0 * self.cache_write_5m
-                + turn.cache_write_1h.max(0) as f64 / 1_000_000.0 * self.cache_write_1h
-                + turn.output_tokens.max(0) as f64 / 1_000_000.0 * self.output
-                + turn.reasoning_tokens.max(0) as f64 / 1_000_000.0 * self.thinking,
-        )
+        let mut cost = uncached / 1_000_000.0 * self.input
+            + turn.cache_read_tokens.max(0) as f64 / 1_000_000.0 * self.cache_read
+            + turn.cache_write_5m.max(0) as f64 / 1_000_000.0 * self.cache_write_5m
+            + turn.cache_write_1h.max(0) as f64 / 1_000_000.0 * self.cache_write_1h
+            + turn.output_tokens.max(0) as f64 / 1_000_000.0 * self.output;
+        // OpenAI/Codex Responses usually fold reasoning into output_tokens already.
+        let cache_inclusive = turn.harness == "codex" || turn.provider == "openai";
+        if !cache_inclusive {
+            cost += turn.reasoning_tokens.max(0) as f64 / 1_000_000.0 * self.thinking;
+        }
+        round_usd(cost)
     }
 }
 
@@ -146,5 +164,51 @@ mod tests {
         let usd = book.turn_usd(&turn).unwrap();
         // uncached 10k * 3 + read 40k * 0.3 = 0.03 + 0.012 = 0.042
         assert!(usd > 0.03 && usd < 0.05, "{usd}");
+    }
+
+    #[test]
+    fn deepseek_tier_uses_two_x_output_not_generic_four() {
+        let rates = TierRates::for_model("deepseek-v4-flash", 0.14);
+        assert!((rates.output - 0.28).abs() < 1e-9);
+        assert!((rates.cache_read - 0.0028).abs() < 1e-9);
+        assert!((rates.cache_write_5m - 0.14).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deepseek_v4_flash_turn_usd() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = PriceBook::load(&CtxPaths::from_root(dir.path().to_path_buf()), "");
+        // 100k uncached @ 0.14 + 500k cache_read @ 0.0028 + 50k write @ 0.14 + 20k out @ 0.28
+        // = 0.014 + 0.0014 + 0.007 + 0.0056 = 0.028
+        let turn = LedgerTurn {
+            model_base: "deepseek-v4-flash".into(),
+            input_tokens: 100_000,
+            cache_read_tokens: 500_000,
+            cache_write_5m: 50_000,
+            output_tokens: 20_000,
+            ..LedgerTurn::default()
+        };
+        let usd = book.turn_usd(&turn).unwrap();
+        assert!((usd - 0.028).abs() < 1e-6, "{usd}");
+    }
+
+    #[test]
+    fn deepseek_v4_pro_turn_usd() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = PriceBook::load(&CtxPaths::from_root(dir.path().to_path_buf()), "");
+        // 100k uncached @ 0.435 + 500k cache_read @ 0.003625 + 50k write @ 0.435 + 20k out @ 0.87
+        // = 0.0435 + 0.0018125 + 0.02175 + 0.0174 = 0.0844625
+        let turn = LedgerTurn {
+            model_base: "deepseek-v4-pro".into(),
+            input_tokens: 100_000,
+            cache_read_tokens: 500_000,
+            cache_write_5m: 50_000,
+            output_tokens: 20_000,
+            ..LedgerTurn::default()
+        };
+        let usd = book.turn_usd(&turn).unwrap();
+        assert!((usd - 0.0844625).abs() < 1e-6, "{usd}");
+        // Pro must not price at $0 (missing catalog) or generic flash-like undercount.
+        assert!(usd > 0.05, "{usd}");
     }
 }

@@ -32,8 +32,13 @@ pub struct LedgerTurn {
 
 impl LedgerTurn {
     pub fn uncached_input(&self) -> i64 {
+        // Codex/OpenAI style: input_tokens already includes cache read/write.
+        // Match CC Switch billable fresh input.
         if self.harness == "codex" || self.provider == "openai" {
-            (self.input_tokens - self.cache_read_tokens).max(0)
+            (self.input_tokens
+                - self.cache_read_tokens.max(0)
+                - self.cache_write_tokens())
+                .max(0)
         } else {
             self.input_tokens
         }
@@ -41,6 +46,15 @@ impl LedgerTurn {
 
     pub fn cache_write_tokens(&self) -> i64 {
         self.cache_write_5m.max(0) + self.cache_write_1h.max(0)
+    }
+
+    /// Cache-normalized real total tokens (CC Switch `realTotalTokens`).
+    /// `fresh_input + output + cache_creation + cache_read`.
+    pub fn real_total_tokens(&self) -> i64 {
+        self.uncached_input()
+            + self.output_tokens.max(0)
+            + self.cache_write_tokens()
+            + self.cache_read_tokens.max(0)
     }
 
     /// Fresh + cache write + cache read. Matches CC Switch's cacheable input.

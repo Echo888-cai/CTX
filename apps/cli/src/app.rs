@@ -208,9 +208,13 @@ fn dispatch_with(
                 "" => "all",
                 m => m,
             };
+            let source = match query_param(query, "source") {
+                "" => "all",
+                s => s,
+            };
             let from = query_param(query, "from").parse().ok();
             let to = query_param(query, "to").parse().ok();
-            json_ok(dashboard_payload(range, model, from, to))
+            json_ok(dashboard_payload(range, model, source, from, to))
         }
         ("GET", "/api/harnesses") => json_ok(harnesses::payload()),
         ("POST", "/api/harness") => json_ok(harnesses::set_enabled(
@@ -387,8 +391,8 @@ fn lifecycle_json(result: anyhow::Result<Value>) -> Value {
     }
 }
 
-fn dashboard_payload(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -> Value {
-    match status::dashboard(range, model, from, to) {
+fn dashboard_payload(range: &str, model: &str, source: &str, from: Option<i64>, to: Option<i64>) -> Value {
+    match status::dashboard(range, model, source, from, to) {
         Ok(mut v) => {
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("harness_summary".into(), harnesses::summary_json());

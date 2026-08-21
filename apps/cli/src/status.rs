@@ -45,7 +45,15 @@ pub fn payload() -> anyhow::Result<Value> {
         "priced_models": money.priced_models,
         "unpriced_models": money.unpriced_models,
         "default_billing_model": rt.config.default_billing_model,
-        "composition": composition_rows(&rt.store, start_of_today(), i64::MAX, snap.today),
+        "composition": composition_rows_filtered(
+            &rt.store,
+            start_of_today(),
+            i64::MAX,
+            snap.today,
+            None,
+            None,
+            None,
+        ),
         "reasons": snap.reasons_today,
         "recent": recent,
         "highlight": recent.first().cloned().unwrap_or(json!(null)),
@@ -57,8 +65,14 @@ pub fn payload() -> anyhow::Result<Value> {
 
 /// Local dashboard. `range` is today | 1d | 24h | 7d | 14d | 30d | custom.
 /// `from`/`to` are unix seconds for a custom window. `model` is `all`, a model
-/// id, or `__unknown__` for sessions whose harness did not report a model.
-pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -> anyhow::Result<Value> {
+/// id, or `__unknown__`. `source` is `all` | `cursor` | `claude` | `codex`.
+pub fn dashboard(
+    range: &str,
+    model: &str,
+    source: &str,
+    from: Option<i64>,
+    to: Option<i64>,
+) -> anyhow::Result<Value> {
     let rt = Runtime::open_default()?;
     let sync = ctx_ledger::sync_if_due(&rt.store, Duration::from_millis(800));
     let now = now_unix();
@@ -75,21 +89,63 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         let n = (((last - first) / bucket) as usize).saturating_add(1).max(1);
         (first, last, n)
     };
-    let selected_model = match model {
+    let selected_source = match source {
         "" | "all" => None,
+        "cursor" | "claude" | "codex" => Some(source),
+        "claude-code" => Some("claude"),
         other => Some(other),
     };
+    let source_ids = selected_source.map(|s| vec![s.to_string()]);
     let book = load_price_book(&rt.config);
-    let mut raw_models = rt
-        .store
-        .dashboard_models_between(since, until)?
-        .into_iter()
-        .collect::<Vec<_>>();
+    // Claude/Codex: list models from ledger transcripts only (same idea as CC Switch
+    // usage). Observations add noise like Other / empty model. Cursor still unions
+    // hooks + ledger because Cursor models often appear first in observations.
+    let mut raw_models = match selected_source {
+        Some("claude") | Some("codex") => ledger_model_rows(
+            &rt.store,
+            since,
+            until,
+            selected_source,
+            &book,
+        ),
+        _ => {
+            let mut rows = rt
+                .store
+                .dashboard_models_between(since, until, source_ids.as_deref())?
+                .into_iter()
+                .collect::<Vec<_>>();
+            rows.extend(ledger_model_rows(
+                &rt.store,
+                since,
+                until,
+                selected_source,
+                &book,
+            ));
+            rows
+        }
+    };
+    raw_models.retain(|m| is_listed_model(&m.id) && (m.totals.raw > 0 || m.totals.avoided > 0));
     raw_models.sort_by(|a, b| {
         let au = a.id.is_empty() || a.id == "__unknown__";
         let bu = b.id.is_empty() || b.id == "__unknown__";
-        au.cmp(&bu).then(b.totals.avoided.cmp(&a.totals.avoided))
+        au.cmp(&bu)
+            .then(b.totals.avoided.cmp(&a.totals.avoided))
+            .then(b.totals.raw.cmp(&a.totals.raw))
     });
+    let selected_model = match model {
+        "" | "all" => None,
+        other => {
+            let want = book.canonical_id(other);
+            let ok = raw_models
+                .iter()
+                .any(|m| book.canonical_id(&m.id) == want || m.id == other);
+            if ok {
+                Some(other)
+            } else {
+                None
+            }
+        }
+    };
     let filter_ids = selected_model.map(|sel| {
         let want = book.canonical_id(sel);
         let mut ids: Vec<String> = raw_models
@@ -102,9 +158,19 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         }
         ids
     });
-    let totals = rt
-        .store
-        .dashboard_totals_for(since, until, filter_ids.as_deref())?;
+    // Claude/Codex hooks often omit model on observations; map blank-model
+    // observations onto the selected model via ledger session ids.
+    let attributed_sessions = selected_model
+        .map(|sel| ledger_sessions_for_model(&rt.store, since, until, selected_source, &book, sel))
+        .unwrap_or_default();
+    let session_filter = (!attributed_sessions.is_empty()).then_some(attributed_sessions.as_slice());
+    let totals = rt.store.dashboard_totals_for(
+        since,
+        until,
+        filter_ids.as_deref(),
+        source_ids.as_deref(),
+        session_filter,
+    )?;
     let all_models = merge_model_rows(&book, raw_models);
     let model_options = all_models
         .iter()
@@ -122,11 +188,40 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         models.retain(|m| {
             m["id"].as_str() == Some(id) || m["id"].as_str() == Some(want.as_str())
         });
+        // Ledger rows carry tokens but not CTX avoided; after session
+        // attribution, fill avoided from observation totals for pricing KPIs.
+        if totals.avoided > 0 {
+            for row in &mut models {
+                if row["avoided"].as_u64().unwrap_or(0) == 0 {
+                    *row = with_price(
+                        &book,
+                        json!({
+                            "id": row["id"],
+                            "name": row["name"],
+                            "sessions": row["sessions"],
+                            "raw": totals.raw,
+                            "delivered": totals.delivered,
+                            "avoided": totals.avoided,
+                            "refetched": totals.refetched,
+                            "net_avoided": totals.net_avoided(),
+                            "reduction_pct": totals.reduction_pct(),
+                            "source_harnesses": row["source_harnesses"],
+                        }),
+                    );
+                }
+            }
+        }
     }
     let money = price_summary(&models);
-    let sparse = rt
-        .store
-        .dashboard_series_for(since, until, bucket, tz, filter_ids.as_deref())?;
+    let sparse = rt.store.dashboard_series_for(
+        since,
+        until,
+        bucket,
+        tz,
+        filter_ids.as_deref(),
+        source_ids.as_deref(),
+        session_filter,
+    )?;
     let series = (0..count)
         .map(|i| {
             let t = start_bucket + (i as i64) * bucket;
@@ -140,24 +235,6 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
             })
         })
         .collect::<Vec<_>>();
-    let by_harness = rt
-        .store
-        .dashboard_by_harness_for(since, until, filter_ids.as_deref())?
-        .into_iter()
-        .map(|(id, t)| {
-            json!({
-                "id": id,
-                "name": crate::harnesses::display_name(&id),
-                "capability": crate::harnesses::capability(&id),
-                "raw": t.raw,
-                "delivered": t.delivered,
-                "avoided": t.avoided,
-                "refetched": t.refetched,
-                "net_avoided": t.net_avoided(),
-                "reduction_pct": t.reduction_pct(),
-            })
-        })
-        .collect::<Vec<_>>();
     Ok(json!({
         "ok": true,
         "enabled": rt.config.enabled,
@@ -165,6 +242,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "range": range,
         "from": since,
         "to": until,
+        "source": selected_source.unwrap_or("all"),
         "model": selected_model
             .map(|id| book.canonical_id(id))
             .unwrap_or_else(|| "all".into()),
@@ -179,22 +257,38 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "priced_models": money.priced_models,
         "unpriced_models": money.unpriced_models,
         "default_billing_model": rt.config.default_billing_model,
-        "composition": composition_rows(&rt.store, since, until, totals),
-        "by_harness": by_harness
-            .into_iter()
-            .filter(|row| {
-                let id = row["id"].as_str().unwrap_or("");
-                matches!(id, "cursor" | "cursor-cli" | "claude" | "claude-code" | "codex")
-            })
-            .collect::<Vec<_>>(),
+        "composition": composition_rows_filtered(
+            &rt.store,
+            since,
+            until,
+            totals,
+            filter_ids.as_deref(),
+            source_ids.as_deref(),
+            session_filter,
+        ),
         "tools": crate::harnesses::payload()["harnesses"].clone(),
         "price_catalog": catalog_json(),
         "pages": rt.store.page_count().unwrap_or(0),
         "store_bytes": rt.store.compressed_bytes().unwrap_or(0),
-        "reasons": optimizer_rows(&rt.store, since, until),
+        "reasons": optimizer_rows_filtered(
+            &rt.store,
+            since,
+            until,
+            filter_ids.as_deref(),
+            source_ids.as_deref(),
+            session_filter,
+        ),
         "recent": feed_rows(&rt.store),
         "snapshots": snapshot_rows(&rt.store),
-        "ledger": ledger_json(&rt.store, since, until, &book, &sync),
+        "ledger": ledger_json(
+            &rt.store,
+            since,
+            until,
+            &book,
+            &sync,
+            selected_source,
+            selected_model,
+        ),
         "epochs": rt.store.epoch_count().unwrap_or(0),
         "overlays": rt.store.overlay_count().unwrap_or(0),
         "synced_at": now,
@@ -212,9 +306,24 @@ fn ledger_json(
     until: i64,
     book: &PriceBook,
     sync: &ctx_ledger::SyncReport,
+    source: Option<&str>,
+    model: Option<&str>,
 ) -> Value {
-    let totals = store.ledger_totals_between(since, until).unwrap_or_default();
-    let turns = store.ledger_between(since, until).unwrap_or_default();
+    let mut turns = store.ledger_between(since, until).unwrap_or_default();
+    if let Some(src) = source {
+        turns.retain(|t| ledger_source_id(&t.harness) == Some(src));
+    }
+    if let Some(sel) = model {
+        let want = book.canonical_id(sel);
+        turns.retain(|t| {
+            let id = if t.model_base.is_empty() {
+                t.model_raw.as_str()
+            } else {
+                t.model_base.as_str()
+            };
+            book.canonical_id(id) == want || id == sel
+        });
+    }
     let usd = book.turns_usd(&turns);
     let advice = compact_advise(&turns, 3, book);
     let avoided_compact = ctx_core::avoided_compact_usd(&turns, book);
@@ -237,7 +346,7 @@ fn ledger_json(
         .iter()
         .filter(|t| t.confidence == "measured" || t.confidence == "partial")
         .count();
-    let kind = if totals.turns == 0 {
+    let kind = if turns.is_empty() {
         "empty"
     } else if measured == 0 && inferred > 0 {
         "inferred"
@@ -247,24 +356,31 @@ fn ledger_json(
         "measured"
     };
     let cursor_only = !turns.is_empty() && turns.iter().all(|t| t.harness == "cursor");
+    let cache_read: i64 = turns.iter().map(|t| t.cache_read_tokens.max(0)).sum();
+    let cache_write: i64 = turns.iter().map(|t| t.cache_write_tokens()).sum();
+    let fresh_input: i64 = turns.iter().map(|t| t.uncached_input()).sum();
+    let output: i64 = turns.iter().map(|t| t.output_tokens.max(0)).sum();
+    let real_total: i64 = turns.iter().map(|t| t.real_total_tokens()).sum();
+    let sources = ledger_sources_json(&turns, book);
     json!({
         "kind": kind,
         "confidence": if inferred > 0 && measured == 0 { "inferred" } else { "measured" },
         "cursor_inferred": cursor_only && inferred > 0,
-        "turns": totals.turns,
-        "input_tokens": totals.input_tokens,
-        "output_tokens": totals.output_tokens,
-        "cache_read_tokens": totals.cache_read_tokens,
-        "cache_write_tokens": totals.cache_write_tokens,
+        "turns": turns.len(),
+        "input_tokens": fresh_input,
+        "output_tokens": output,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "real_total_tokens": real_total,
         "cache_miss_turns": miss_turns,
         "cache_miss_tokens": miss_tokens,
-        "reasoning_tokens": totals.reasoning_tokens,
-        "compact_events": totals.compact_events,
+        "reasoning_tokens": turns.iter().map(|t| t.reasoning_tokens.max(0)).sum::<i64>(),
+        "compact_events": turns.iter().filter(|t| t.is_compaction).count(),
         "avoided_compact_usd": avoided_compact,
         "hit_rate": hit_rate,
         "usd": usd,
-        "plan_type": totals.plan_type,
-        "quota_used_pct": totals.quota_used_pct,
+        "plan_type": turns.iter().rev().find(|t| !t.plan_type.is_empty()).map(|t| t.plan_type.clone()).unwrap_or_default(),
+        "quota_used_pct": turns.iter().rev().find_map(|t| t.quota_used_pct),
         "resets_at": turns.iter().rev().find(|t| !t.resets_at.is_empty()).map(|t| t.resets_at.clone()).unwrap_or_default(),
         "page_faults": faults,
         "recalled_tokens": recalled,
@@ -272,6 +388,7 @@ fn ledger_json(
         "task_passed": passed,
         "synced_at": now_unix(),
         "sync_inserted": sync.inserted,
+        "sources": sources,
         "advice": {
             "keep_cache": advice.keep_cache,
             "reason": advice.reason,
@@ -280,16 +397,98 @@ fn ledger_json(
     })
 }
 
+fn ledger_source_id(harness: &str) -> Option<&'static str> {
+    match harness {
+        "cursor" => Some("cursor"),
+        "claude" | "claude-code" => Some("claude"),
+        "codex" | "chatgpt" | "openai-codex" => Some("codex"),
+        _ => None,
+    }
+}
+
+fn ledger_source_slice<'a>(turns: &'a [LedgerTurn], id: &str) -> Vec<&'a LedgerTurn> {
+    turns
+        .iter()
+        .filter(|t| ledger_source_id(&t.harness) == Some(id))
+        .collect()
+}
+
+fn ledger_source_kind(slice: &[&LedgerTurn]) -> &'static str {
+    if slice.is_empty() {
+        return "empty";
+    }
+    let inferred = slice.iter().filter(|t| t.confidence == "inferred").count();
+    let measured = slice
+        .iter()
+        .filter(|t| t.confidence == "measured" || t.confidence == "partial")
+        .count();
+    if measured == 0 && inferred > 0 {
+        "inferred"
+    } else if inferred > 0 {
+        "mixed"
+    } else {
+        "measured"
+    }
+}
+
+fn ledger_sources_json(turns: &[LedgerTurn], book: &PriceBook) -> Vec<Value> {
+    // Claude Code CLI (~/.claude/projects) · Codex CLI (~/.codex/sessions) · Cursor local.
+    // Same cache-normalized math as CC Switch UsageHero / CostCalculator.
+    const IDS: &[(&str, &str)] = &[
+        ("claude", "Claude Code"),
+        ("codex", "Codex"),
+        ("cursor", "Cursor"),
+    ];
+    IDS.iter()
+        .map(|(id, label)| {
+            let refs = ledger_source_slice(turns, id);
+            let owned: Vec<LedgerTurn> = refs.iter().map(|t| (*t).clone()).collect();
+            let hit_rate = ledger_hit_rate(&owned);
+            let cache_read: i64 = owned.iter().map(|t| t.cache_read_tokens.max(0)).sum();
+            let cache_write: i64 = owned.iter().map(|t| t.cache_write_tokens()).sum();
+            let fresh_input: i64 = owned.iter().map(|t| t.uncached_input()).sum();
+            let output: i64 = owned.iter().map(|t| t.output_tokens.max(0)).sum();
+            let real_total: i64 = owned.iter().map(|t| t.real_total_tokens()).sum();
+            let usd = book.turns_usd(&owned);
+            let kind = ledger_source_kind(&refs);
+            json!({
+                "id": id,
+                "label": label,
+                "turns": owned.len(),
+                "hit_rate": hit_rate,
+                "real_total_tokens": real_total,
+                "input_tokens": fresh_input,
+                "output_tokens": output,
+                "cache_read_tokens": cache_read,
+                "cache_write_tokens": cache_write,
+                "usd": usd,
+                "kind": kind,
+                "estimated": *id == "cursor",
+            })
+        })
+        .collect()
+}
+
 /// One bar: what actually reached the model, then why the rest did not.
 /// Segments sum to raw so the bar is readable as the whole context.
-fn composition_rows(store: &Store, since: i64, until: i64, totals: ctx_core::TokenTotals) -> Vec<Value> {
+fn composition_rows_filtered(
+    store: &Store,
+    since: i64,
+    until: i64,
+    totals: ctx_core::TokenTotals,
+    models: Option<&[String]>,
+    harnesses: Option<&[String]>,
+    sessions: Option<&[String]>,
+) -> Vec<Value> {
     let mut rows = vec![json!({
         "key": "delivered",
         "label": "有效输入",
         "tokens": totals.delivered,
         "kept": true,
     })];
-    let reasons = store.reason_breakdown_between(since, until).unwrap_or_default();
+    let reasons = store
+        .reason_breakdown_for(since, until, models, harnesses, sessions)
+        .unwrap_or_default();
     let tallied: u64 = reasons.iter().map(|(_, n)| *n).sum();
     let mut sorted = reasons;
     sorted.sort_by_key(|(_, tokens)| std::cmp::Reverse(*tokens));
@@ -304,8 +503,6 @@ fn composition_rows(store: &Store, since: i64, until: i64, totals: ctx_core::Tok
             "kept": false,
         }));
     }
-    // Reason tallies can lag the token totals; keep the bar honest instead of
-    // silently rescaling the named segments.
     if let Some(rest) = totals.avoided.checked_sub(tallied) {
         if rest > 0 && totals.avoided > 0 {
             rows.push(json!({
@@ -319,8 +516,17 @@ fn composition_rows(store: &Store, since: i64, until: i64, totals: ctx_core::Tok
     rows
 }
 
-fn optimizer_rows(store: &Store, since: i64, until: i64) -> Vec<Value> {
-    let rows = store.reason_breakdown_between(since, until).unwrap_or_default();
+fn optimizer_rows_filtered(
+    store: &Store,
+    since: i64,
+    until: i64,
+    models: Option<&[String]>,
+    harnesses: Option<&[String]>,
+    sessions: Option<&[String]>,
+) -> Vec<Value> {
+    let rows = store
+        .reason_breakdown_for(since, until, models, harnesses, sessions)
+        .unwrap_or_default();
     let total: u64 = rows.iter().map(|(_, n)| *n).sum::<u64>().max(1);
     rows.into_iter()
         .map(|(label, tokens)| {
@@ -331,6 +537,38 @@ fn optimizer_rows(store: &Store, since: i64, until: i64) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Sessions whose ledger turns used `model` (for attributing blank-model hooks).
+fn ledger_sessions_for_model(
+    store: &Store,
+    since: i64,
+    until: i64,
+    source: Option<&str>,
+    book: &PriceBook,
+    model: &str,
+) -> Vec<String> {
+    let want = book.canonical_id(model);
+    let mut turns = store.ledger_between(since, until).unwrap_or_default();
+    if let Some(src) = source {
+        turns.retain(|t| ledger_source_id(&t.harness) == Some(src));
+    }
+    turns.retain(|t| {
+        let id = if t.model_base.is_empty() {
+            t.model_raw.as_str()
+        } else {
+            t.model_base.as_str()
+        };
+        book.canonical_id(id) == want || id == model
+    });
+    let mut sessions: Vec<String> = turns
+        .into_iter()
+        .map(|t| t.session)
+        .filter(|s| !s.is_empty())
+        .collect();
+    sessions.sort();
+    sessions.dedup();
+    sessions
 }
 
 fn feed_rows(store: &Store) -> Vec<Value> {
@@ -380,6 +618,73 @@ fn ledger_hit_rate(turns: &[LedgerTurn]) -> Option<f64> {
     token_weighted_hit_rate(turns)
 }
 
+/// Models seen in provider transcripts for the window (Claude/Codex/Cursor ledger).
+/// Unioned with observation-based rows so the dropdown is not empty when hooks
+/// never recorded those tools.
+fn ledger_model_rows(
+    store: &Store,
+    since: i64,
+    until: i64,
+    source: Option<&str>,
+    book: &PriceBook,
+) -> Vec<ModelRow> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut turns = store.ledger_between(since, until).unwrap_or_default();
+    if let Some(src) = source {
+        turns.retain(|t| ledger_source_id(&t.harness) == Some(src));
+    }
+    struct Acc {
+        sessions: BTreeSet<String>,
+        harnesses: Vec<String>,
+        tokens: u64,
+    }
+    let mut map: BTreeMap<String, Acc> = BTreeMap::new();
+    for turn in turns {
+        let raw_id = if !turn.model_base.is_empty() {
+            turn.model_base.as_str()
+        } else if !turn.model_raw.is_empty() {
+            turn.model_raw.as_str()
+        } else {
+            "__unknown__"
+        };
+        let id = if raw_id == "__unknown__" {
+            "__unknown__".into()
+        } else {
+            book.canonical_id(raw_id)
+        };
+        let harness = ledger_source_id(&turn.harness)
+            .unwrap_or(turn.harness.as_str())
+            .to_string();
+        let entry = map.entry(id).or_insert_with(|| Acc {
+            sessions: BTreeSet::new(),
+            harnesses: Vec::new(),
+            tokens: 0,
+        });
+        if !turn.session.is_empty() {
+            entry.sessions.insert(turn.session.clone());
+        }
+        if !harness.is_empty() && !entry.harnesses.iter().any(|h| h == &harness) {
+            entry.harnesses.push(harness);
+        }
+        entry.tokens = entry
+            .tokens
+            .saturating_add(turn.real_total_tokens().max(0) as u64);
+    }
+    map.into_iter()
+        .map(|(id, acc)| ModelRow {
+            id,
+            sessions: acc.sessions.len() as u64,
+            totals: ctx_core::TokenTotals {
+                raw: acc.tokens,
+                delivered: acc.tokens,
+                avoided: 0,
+                refetched: 0,
+            },
+            source_harnesses: acc.harnesses,
+        })
+        .collect()
+}
+
 fn harness_label(id: &str) -> String {
     match id {
         "cursor" => "Cursor".into(),
@@ -390,8 +695,45 @@ fn harness_label(id: &str) -> String {
     }
 }
 
+/// Drop Claude Code internals and unlabeled rows from the model dropdown.
+fn is_listed_model(id: &str) -> bool {
+    let id = id.trim();
+    if id.is_empty() || id == "__unknown__" || id.eq_ignore_ascii_case("unknown") {
+        return false;
+    }
+    if id.eq_ignore_ascii_case("<synthetic>") || id.eq_ignore_ascii_case("synthetic") {
+        return false;
+    }
+    if id.starts_with('<') && id.ends_with('>') {
+        return false;
+    }
+    true
+}
+
+/// Real model id, title-cased on `-` segments: `deepseek-v4-pro` → `Deepseek-V4-Pro`.
 fn model_label(id: &str) -> String {
-    PriceBook::display_name(id)
+    let id = id.trim();
+    if id.is_empty() || id == "__unknown__" || id.eq_ignore_ascii_case("unknown") {
+        return "Other".into();
+    }
+    if id.eq_ignore_ascii_case("default") || id.eq_ignore_ascii_case("auto") {
+        return "Auto".into();
+    }
+    id.split('-')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut out = first.to_uppercase().collect::<String>();
+                    out.push_str(chars.as_str());
+                    out
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn merge_model_rows(book: &PriceBook, rows: Vec<ModelRow>) -> Vec<Value> {
@@ -867,12 +1209,15 @@ mod tests {
 
     #[test]
     fn dashboard_model_labels_are_readable_without_guessing() {
-        assert_eq!(model_label("gpt-5"), "GPT-5");
-        assert_eq!(model_label("claude-sonnet-4-6"), "Claude Sonnet 4");
-        assert_eq!(model_label("claude-opus-4-1"), "Claude Opus 4");
+        assert_eq!(model_label("gpt-5"), "Gpt-5");
+        assert_eq!(model_label("deepseek-v4-pro"), "Deepseek-V4-Pro");
+        assert_eq!(model_label("deepseek-v4-flash"), "Deepseek-V4-Flash");
+        assert_eq!(model_label("claude-sonnet-4-6"), "Claude-Sonnet-4-6");
         assert_eq!(model_label("__unknown__"), "Other");
         assert_eq!(model_label("default"), "Auto");
-        assert_eq!(model_label("future-model-x"), "future-model-x");
+        assert_eq!(model_label("future-model-x"), "Future-Model-X");
+        assert!(!is_listed_model("<synthetic>"));
+        assert!(!is_listed_model("__unknown__"));
     }
 
     #[test]
