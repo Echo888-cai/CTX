@@ -17,25 +17,32 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: ctx-x86_64-unknown-linux-gnu
+            asset: CTX-Linux-x64
+            kind: tar
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact: ctx-aarch64-unknown-linux-gnu
+            asset: CTX-Linux-Arm
+            kind: tar
             use_cross: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact: ctx-x86_64-unknown-linux-musl
+            asset: CTX-Linux-x64-musl
+            kind: tar
             use_cross: true
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: ctx-aarch64-apple-darwin
-          - os: macos-13
+            asset: CTX-Apple-Arm
+            kind: macos
+            app_arch: arm64
+          - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: ctx-x86_64-apple-darwin
+            asset: CTX-Apple-Intel
+            kind: macos
+            app_arch: x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: ctx-x86_64-pc-windows-msvc
-            exe: true
+            asset: CTX-Windows-x64
+            kind: exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -46,50 +53,117 @@ jobs:
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --locked
-      - name: Build
+      - name: Build CLI
         shell: bash
         run: |
-          BIN=ctx
+          VER="${GITHUB_REF_NAME#v}"
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --locked --target ${{ matrix.target }} -p ctx-cli
           else
             cargo build --release --locked --target ${{ matrix.target }} -p ctx-cli
           fi
-          OUT="target/${{ matrix.target }}/release/${BIN}"
-          if [ "${{ matrix.exe }}" = "true" ]; then
-            OUT="${OUT}.exe"
-            cp "$OUT" "${{ matrix.artifact }}.exe"
-            echo "ASSET=${{ matrix.artifact }}.exe" >> "$GITHUB_ENV"
+          BIN="target/${{ matrix.target }}/release/ctx"
+          if [ "${{ matrix.kind }}" = "exe" ]; then
+            cp "${BIN}.exe" "${{ matrix.asset }}-v${VER}.exe"
+            echo "ASSET=${{ matrix.asset }}-v${VER}.exe" >> "$GITHUB_ENV"
           else
-            cp "$OUT" "${{ matrix.artifact }}"
-            tar -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
-            echo "ASSET=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_ENV"
+            stage="$(mktemp -d)"
+            cp "$BIN" "$stage/ctx"
+            chmod +x "$stage/ctx"
+            if [ "${{ matrix.kind }}" = "macos" ]; then
+              TAR="${{ matrix.asset }}-cli-v${VER}.tar.gz"
+            else
+              TAR="${{ matrix.asset }}-v${VER}.tar.gz"
+            fi
+            tar -C "$stage" -czf "$TAR" ctx
+            echo "ASSET=$TAR" >> "$GITHUB_ENV"
           fi
       - name: Package macOS app
-        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-apple-darwin'
+        if: ${{ matrix.kind == 'macos' }}
         shell: bash
         run: |
+          VER="${GITHUB_REF_NAME#v}"
+          export CTX_APP_ARCH="${{ matrix.app_arch }}"
+          export CTX_APP_VERSION="$VER"
           bash apps/macos/build.sh
-          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
-            NAME=CTX-macOS-arm64
-          else
-            NAME=CTX-macOS-x86_64
-          fi
+          NAME="${{ matrix.asset }}-v${VER}"
           ditto -c -k --keepParent apps/macos/dist/CTX.app "${NAME}.zip"
           cp apps/macos/dist/CTX.dmg "${NAME}.dmg"
-          echo "APP_ASSET=${NAME}.dmg" >> "$GITHUB_ENV"
+          echo "APP_DMG=${NAME}.dmg" >> "$GITHUB_ENV"
           echo "APP_ZIP=${NAME}.zip" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
-          generate_release_notes: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+          generate_release_notes: false
       - uses: softprops/action-gh-release@v2
-        if: env.APP_ASSET != ''
+        if: ${{ env.APP_DMG != '' }}
         with:
           files: |
-            ${{ env.APP_ASSET }}
+            ${{ env.APP_DMG }}
             ${{ env.APP_ZIP }}
           generate_release_notes: false
+
+  notes:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Title and install notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "CTX v${VER}" --notes "$(cat <<EOF
+          # CTX v${VER}
+
+          ## Mac — install this
+
+          Download the **.dmg**, open it, drag **CTX.app** into Applications.
+
+          | Computer | Installer |
+          |---|---|
+          | Apple silicon (M1 / M2 / M3 / M4) | \`CTX-Apple-Arm-v${VER}.dmg\` |
+          | Intel Mac | \`CTX-Apple-Intel-v${VER}.dmg\` |
+
+          First launch, if macOS asks: Control-click CTX.app → Open.
+
+          Do not download the \`-cli-\` tarball unless you only want the \`ctx\` command. That is not the Mac app.
+
+          ## Windows / Linux — command line
+
+          | System | File |
+          |---|---|
+          | Windows (x64) | \`CTX-Windows-x64-v${VER}.exe\` — rename to \`ctx.exe\` and put it on your PATH |
+          | Linux (x64) | \`CTX-Linux-x64-v${VER}.tar.gz\` |
+          | Linux (Arm) | \`CTX-Linux-Arm-v${VER}.tar.gz\` |
+          | Linux (x64, static musl) | \`CTX-Linux-x64-musl-v${VER}.tar.gz\` |
+
+          Archives unpack to a binary named \`ctx\`.
+
+          ## One-liner (macOS / Linux)
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash
+          \`\`\`
+
+          Then:
+
+          \`\`\`bash
+          ctx init
+          ctx setup --wizard
+          ctx app
+          \`\`\`
+
+          ---
+
+          ## 安装
+
+          **苹果电脑：** 下载 **CTX-Apple-Arm-v${VER}.dmg**（Intel 用 **CTX-Apple-Intel-v${VER}.dmg**），打开后把 **CTX.app** 拖进「应用程序」。不要下 \`-cli-\` 那个压缩包，那是命令行，不是安装包。
+
+          **Windows：** \`CTX-Windows-x64-v${VER}.exe\`，改名为 \`ctx.exe\` 放到 PATH。
+
+          **Linux：** \`CTX-Linux-x64-v${VER}.tar.gz\` 或 \`CTX-Linux-Arm-v${VER}.tar.gz\`，解压得到 \`ctx\`。
+          EOF
+          )"
 
   docker:
     needs: build

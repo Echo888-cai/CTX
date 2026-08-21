@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO="${CTX_REPO:-https://github.com/Echo888-cai/CTX.git}"
 SRC="${CTX_SRC:-$HOME/.ctx/src}"
+GH_DOWNLOAD="${REPO%.git}"
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'ctx install: %s\n' "$*" >&2; exit 1; }
@@ -42,7 +43,7 @@ resolve_src() {
     return
   fi
   need_cmd git
-    if [ -d "$SRC/.git" ]; then
+  if [ -d "$SRC/.git" ]; then
     say "updating $SRC"
     git -C "$SRC" pull --ff-only
   else
@@ -52,43 +53,67 @@ resolve_src() {
   fi
 }
 
-main() {
+latest_tag() {
+  local url
+  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$GH_DOWNLOAD/releases/latest")" || return 1
+  url="${url%%$'\r'}"
+  url="${url%/}"
+  printf '%s\n' "${url##*/}"
+}
 
-fetch_prebuilt() {
-  local target="$1" url tmp
-  url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
+install_cli_from_tar() {
+  local archive="$1" tmp
   tmp="$(mktemp -d)"
-  if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
-    tar -C "$tmp" -xzf "$tmp/ctx.tar.gz"
-    mkdir -p "$HOME/.cargo/bin"
-    if [ -f "$tmp/ctx-${target}" ]; then
-      install -m 755 "$tmp/ctx-${target}" "$HOME/.cargo/bin/ctx"
-    elif [ -f "$tmp/ctx" ]; then
-      install -m 755 "$tmp/ctx" "$HOME/.cargo/bin/ctx"
-    else
-      rm -rf "$tmp"
-      return 1
-    fi
+  tar -C "$tmp" -xzf "$archive"
+  mkdir -p "$HOME/.cargo/bin"
+  if [ -f "$tmp/ctx" ]; then
+    install -m 755 "$tmp/ctx" "$HOME/.cargo/bin/ctx"
     rm -rf "$tmp"
-    say "installed prebuilt ctx ($target)"
+    return 0
+  fi
+  local found
+  found="$(find "$tmp" -maxdepth 2 -type f \( -name ctx -o -name 'ctx-*' \) | head -1)"
+  if [ -n "$found" ]; then
+    install -m 755 "$found" "$HOME/.cargo/bin/ctx"
+    rm -rf "$tmp"
     return 0
   fi
   rm -rf "$tmp"
   return 1
 }
 
+fetch_prebuilt() {
+  local file="$1" tag="$2" url tmp
+  url="$GH_DOWNLOAD/releases/download/${tag}/${file}"
+  tmp="$(mktemp -d)"
+  if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
+    if install_cli_from_tar "$tmp/ctx.tar.gz"; then
+      rm -rf "$tmp"
+      say "installed prebuilt ctx ($file)"
+      return 0
+    fi
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
 try_prebuilt() {
-  local os arch
+  local os arch tag ver
   os="$(uname -s)"
   arch="$(uname -m)"
   command -v curl >/dev/null 2>&1 || return 1
+  tag="$(latest_tag)" || return 1
+  ver="${tag#v}"
+  CTX_RELEASE_TAG="$tag"
+  CTX_RELEASE_VER="$ver"
   case "$os-$arch" in
-    Darwin-arm64) fetch_prebuilt aarch64-apple-darwin ;;
-    Darwin-x86_64) fetch_prebuilt x86_64-apple-darwin ;;
+    Darwin-arm64) fetch_prebuilt "CTX-Apple-Arm-cli-v${ver}.tar.gz" "$tag" ;;
+    Darwin-x86_64) fetch_prebuilt "CTX-Apple-Intel-cli-v${ver}.tar.gz" "$tag" ;;
     Linux-x86_64)
-      fetch_prebuilt x86_64-unknown-linux-gnu || fetch_prebuilt x86_64-unknown-linux-musl
+      fetch_prebuilt "CTX-Linux-x64-v${ver}.tar.gz" "$tag" \
+        || fetch_prebuilt "CTX-Linux-x64-musl-v${ver}.tar.gz" "$tag"
       ;;
-    Linux-aarch64) fetch_prebuilt aarch64-unknown-linux-gnu ;;
+    Linux-aarch64) fetch_prebuilt "CTX-Linux-Arm-v${ver}.tar.gz" "$tag" ;;
     *) return 1 ;;
   esac
 }
@@ -97,14 +122,17 @@ install_mac_app() {
   [ "$(uname -s)" = Darwin ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
   command -v ditto >/dev/null 2>&1 || return 0
-  local name url tmp dest
+  local name url tmp dest tag ver
+  tag="${CTX_RELEASE_TAG:-$(latest_tag || true)}"
+  [ -n "$tag" ] || return 0
+  ver="${tag#v}"
   case "$(uname -m)" in
-    arm64) name=CTX-macOS-arm64 ;;
-    x86_64) name=CTX-macOS-x86_64 ;;
+    arm64) name="CTX-Apple-Arm-v${ver}" ;;
+    x86_64) name="CTX-Apple-Intel-v${ver}" ;;
     *) return 0 ;;
   esac
   tmp="$(mktemp -d)"
-  url="https://github.com/Echo888-cai/CTX/releases/latest/download/${name}.zip"
+  url="$GH_DOWNLOAD/releases/download/${tag}/${name}.zip"
   if ! curl -fsSL "$url" -o "$tmp/ctx.zip"; then
     rm -rf "$tmp"
     return 0
@@ -130,16 +158,12 @@ install_mac_app() {
   open "$dest" >/dev/null 2>&1 || true
 }
 
-  if try_prebuilt; then
-    ensure_path_hint
-    say "creating ~/.ctx and wiring Claude / Cursor"
-    ctx init
-    install_mac_app
-    cat <<'EOF'
+print_done() {
+  cat <<'EOF'
 
 CTX is on this machine.
 
-  Mac: drag CTX.app from CTX-macOS-arm64.dmg into Applications
+  Mac: open CTX-Apple-Arm-v*.dmg and drag CTX.app into Applications
   ctx app                 open today's avoided-token dashboard
   ctx app --install-app   rebuild the Dock app from this tree
   ctx app --install-service   start the dashboard at login (macOS / Linux)
@@ -149,6 +173,17 @@ CTX is on this machine.
 The big number is tokens that never entered the model.
 Raw context stayed on disk. Nothing was summarized away.
 EOF
+}
+
+main() {
+  CTX_RELEASE_TAG=""
+  CTX_RELEASE_VER=""
+  if try_prebuilt; then
+    ensure_path_hint
+    say "creating ~/.ctx and wiring Claude / Cursor"
+    ctx init
+    install_mac_app
+    print_done
     return
   fi
   ensure_rust
@@ -159,20 +194,7 @@ EOF
   say "creating ~/.ctx and wiring Claude / Cursor"
   ctx init
   install_mac_app
-  cat <<'EOF'
-
-CTX is on this machine.
-
-  Mac: drag CTX.app from CTX-macOS-arm64.dmg into Applications
-  ctx app                 open today's avoided-token dashboard
-  ctx app --install-app   rebuild the Dock app from this tree
-  ctx app --install-service   start the dashboard at login (macOS / Linux)
-  ctx status              same numbers in the terminal
-  ctx doctor              wiring check
-
-The big number is tokens that never entered the model.
-Raw context stayed on disk. Nothing was summarized away.
-EOF
+  print_done
 }
 
 main "$@"

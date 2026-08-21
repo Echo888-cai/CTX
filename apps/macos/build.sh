@@ -60,7 +60,11 @@ EOF
 }
 
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
-ARCH="$(uname -m)"
+ARCH="${CTX_APP_ARCH:-$(uname -m)}"
+case "$ARCH" in
+  aarch64|arm64) ARCH=arm64 ;;
+  x86_64|amd64) ARCH=x86_64 ;;
+esac
 TARGET="${ARCH}-apple-macosx13.0"
 BIN_DIR="$(mktemp -d)"
 trap 'rm -rf "$BIN_DIR"' EXIT
@@ -80,6 +84,14 @@ swiftc -parse-as-library \
 rm -rf "$DIST"
 mkdir -p "$DIST/Contents/MacOS" "$DIST/Contents/Resources"
 cp "$ROOT/Info.plist" "$DIST/Contents/Info.plist"
+VER="${CTX_APP_VERSION:-}"
+if [ -z "$VER" ] && [ -f "$ROOT/../../Cargo.toml" ]; then
+  VER="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/../../Cargo.toml" | head -1)"
+fi
+if [ -n "$VER" ] && [ -x /usr/libexec/PlistBuddy ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$DIST/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$DIST/Contents/Info.plist"
+fi
 cp "$BIN_DIR/CTX" "$DIST/Contents/MacOS/CTX"
 for asset in ctx-wordmark.png ctx-menubar.png ctx-mark.png ctx-appicon.png; do
   if [ -f "$ASSETS/$asset" ]; then
@@ -87,7 +99,10 @@ for asset in ctx-wordmark.png ctx-menubar.png ctx-mark.png ctx-appicon.png; do
   fi
 done
 
-ICON_SRC="$ASSETS/ctx-appicon.png"
+ICON_SRC="$ROOT/Resources/AppIcon.png"
+if [ ! -f "$ICON_SRC" ]; then
+  ICON_SRC="$ASSETS/ctx-appicon.png"
+fi
 if [ ! -f "$ICON_SRC" ]; then
   ICON_SRC="$ASSETS/ctx-mark.png"
 fi

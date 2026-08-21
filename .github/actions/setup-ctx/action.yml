@@ -20,34 +20,40 @@ runs:
         set -euo pipefail
         os="$(uname -s)"
         arch="$(uname -m)"
+        if [ "$CTX_VERSION" = "latest" ]; then
+          tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/Echo888-cai/CTX/releases/latest)"
+          tag="${tag%/}"
+          tag="${tag##*/}"
+        else
+          tag="v${CTX_VERSION#v}"
+        fi
+        ver="${tag#v}"
         case "$os-$arch" in
-          Darwin-arm64) targets="aarch64-apple-darwin" ;;
-          Darwin-x86_64) targets="x86_64-apple-darwin" ;;
-          Linux-x86_64) targets="x86_64-unknown-linux-gnu x86_64-unknown-linux-musl" ;;
-          Linux-aarch64) targets="aarch64-unknown-linux-gnu" ;;
+          Darwin-arm64) files="CTX-Apple-Arm-cli-v${ver}.tar.gz" ;;
+          Darwin-x86_64) files="CTX-Apple-Intel-cli-v${ver}.tar.gz" ;;
+          Linux-x86_64) files="CTX-Linux-x64-v${ver}.tar.gz CTX-Linux-x64-musl-v${ver}.tar.gz" ;;
+          Linux-aarch64) files="CTX-Linux-Arm-v${ver}.tar.gz" ;;
           *) echo "unsupported $os-$arch"; exit 1 ;;
         esac
         dest="${HOME}/.local/bin"
         mkdir -p "$dest"
         tmp="$(mktemp -d)"
         installed=
-        for target in $targets; do
-          if [ "$CTX_VERSION" = "latest" ]; then
-            url="https://github.com/Echo888-cai/CTX/releases/latest/download/ctx-${target}.tar.gz"
-          else
-            url="https://github.com/Echo888-cai/CTX/releases/download/v${CTX_VERSION}/ctx-${target}.tar.gz"
-          fi
+        for file in $files; do
+          url="https://github.com/Echo888-cai/CTX/releases/download/${tag}/${file}"
           if curl -fsSL "$url" -o "$tmp/ctx.tar.gz"; then
             tar -C "$tmp" -xzf "$tmp/ctx.tar.gz"
-            if [ -f "$tmp/ctx-${target}" ]; then
-              install -m 755 "$tmp/ctx-${target}" "$dest/ctx"
-            elif [ -f "$tmp/ctx" ]; then
+            if [ -f "$tmp/ctx" ]; then
               install -m 755 "$tmp/ctx" "$dest/ctx"
-            else
-              continue
+              installed=1
+              break
             fi
-            installed=1
-            break
+            found="$(find "$tmp" -maxdepth 2 -type f \( -name ctx -o -name 'ctx-*' \) | head -1)"
+            if [ -n "$found" ]; then
+              install -m 755 "$found" "$dest/ctx"
+              installed=1
+              break
+            fi
           fi
         done
         if [ -z "$installed" ]; then

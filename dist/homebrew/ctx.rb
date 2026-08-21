@@ -3,23 +3,23 @@
 class Ctx < Formula
   desc "Virtual memory for AI context"
   homepage "https://github.com/Echo888-cai/CTX"
-  version "0.2.1"
+  version "0.2.2"
   license "MIT"
   sha256 :no_check
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/ctx-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/CTX-Apple-Arm-cli-v#{version}.tar.gz"
     else
-      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/ctx-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/CTX-Apple-Intel-cli-v#{version}.tar.gz"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/ctx-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/CTX-Linux-Arm-v#{version}.tar.gz"
     else
-      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/ctx-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/Echo888-cai/CTX/releases/download/v#{version}/CTX-Linux-x64-v#{version}.tar.gz"
     end
   end
 

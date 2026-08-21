@@ -38,7 +38,7 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-**macOS：** 下载 **[CTX-macOS-arm64.dmg](https://github.com/Echo888-cai/CTX/releases/latest/download/CTX-macOS-arm64.dmg)**（Intel 用 `CTX-macOS-x86_64.dmg`）。打开后把 **CTX.app** 拖进「应用程序」。不要双击 `ctx-aarch64-apple-darwin`——那是命令行文件，系统会拦截。
+**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.2.2.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.2.2/CTX-Apple-Arm-v0.2.2.dmg)**（Intel 用 `CTX-Apple-Intel-v0.2.2.dmg`）。打开后把 **CTX.app** 拖进「应用程序」。带 `-cli-` 的是命令行，不是安装包。
 
 第一次打开若提示无法验证：按住 Control 点 CTX.app → 打开。
 
@@ -56,7 +56,7 @@ ctx app                     # 仪表盘：今天挡在模型外面的 token
 ctx app --install-service   # 可选：登录后自动开仪表盘
 ```
 
-Linux / Windows 的 CLI 在同一页 [Releases](https://github.com/Echo888-cai/CTX/releases)：`ctx-*-linux-*.tar.gz` 或 `ctx-x86_64-pc-windows-msvc.exe`。
+Linux / Windows 的 CLI 在同一页 [Releases](https://github.com/Echo888-cai/CTX/releases)：`CTX-Linux-x64-v*.tar.gz`、`CTX-Linux-Arm-v*.tar.gz` 或 `CTX-Windows-x64-v*.exe`。
 
 最大那个数字就是 **少进模型的 token**。原文还在磁盘上。终端里同一份数据：`ctx status`。
 
