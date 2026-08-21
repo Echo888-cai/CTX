@@ -18,6 +18,18 @@ need_cmd swiftc
 need_cmd xcrun
 need_cmd hdiutil
 
+detach_dmg() {
+  local mount="$1" i
+  for i in 1 2 3 4 5 6 7 8; do
+    if hdiutil detach "$mount" -force >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  diskutil unmount force "$mount" >/dev/null 2>&1 || true
+  hdiutil detach "$mount" -force >/dev/null 2>&1 || return 1
+}
+
 package_dmg() {
   local vol="Install CTX"
   local final rw stage mount
@@ -29,6 +41,15 @@ package_dmg() {
   ln -s /Applications "$stage/Applications"
 
   rm -f "$rw" "$final"
+
+  # GitHub runners keep Finder's hold on the RW image; skip layout and write UDZO directly.
+  if [ -n "${CI:-}" ]; then
+    hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDZO -imagekey zlib-level=9 "$final" >/dev/null
+    rm -rf "$stage"
+    say "packed $final"
+    return
+  fi
+
   hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDRW "$rw" >/dev/null
   rm -rf "$stage"
 
@@ -53,7 +74,8 @@ tell application "Finder"
 end tell
 EOF
   sync
-  hdiutil detach "$mount" >/dev/null
+  sleep 1
+  detach_dmg "$mount"
   hdiutil convert "$rw" -format UDZO -imagekey zlib-level=9 -o "$final" >/dev/null
   rm -f "$rw"
   say "packed $final"

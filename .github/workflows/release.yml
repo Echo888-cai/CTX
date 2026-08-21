@@ -78,6 +78,10 @@ jobs:
             tar -C "$stage" -czf "$TAR" ctx
             echo "ASSET=$TAR" >> "$GITHUB_ENV"
           fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: false
       - name: Package macOS app
         if: ${{ matrix.kind == 'macos' }}
         shell: bash
@@ -92,10 +96,6 @@ jobs:
           echo "APP_DMG=${NAME}.dmg" >> "$GITHUB_ENV"
           echo "APP_ZIP=${NAME}.zip" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.ASSET }}
-          generate_release_notes: false
-      - uses: softprops/action-gh-release@v2
         if: ${{ env.APP_DMG != '' }}
         with:
           files: |
@@ -105,6 +105,7 @@ jobs:
 
   notes:
     needs: build
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Title and install notes
@@ -167,6 +168,7 @@ jobs:
 
   docker:
     needs: build
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
