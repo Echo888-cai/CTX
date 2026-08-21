@@ -38,7 +38,7 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-**macOS:** on [Releases](https://github.com/Echo888-cai/CTX/releases/latest) download **[CTX-Apple-Arm-v0.2.2.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.2.2/CTX-Apple-Arm-v0.2.2.dmg)** (Intel: `CTX-Apple-Intel-v0.2.2.dmg`). Open the disk image and **drag CTX.app into Applications**. The `-cli-` tarball is the command-line `ctx`, not the Mac app.
+**macOS:** on [Releases](https://github.com/Echo888-cai/CTX/releases/latest) download **[CTX-Apple-Arm-v0.1.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1/CTX-Apple-Arm-v0.1.dmg)** (Intel: `CTX-Apple-Intel-v0.1.dmg`). Open the disk image and **drag CTX.app into Applications**. The `-cli-` tarball is the command-line `ctx`, not the Mac app.
 
 First launch, if macOS asks: Control-click CTX.app → Open.
 

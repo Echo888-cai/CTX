@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1
+
+- Public installer release: `CTX-Apple-Arm-v0.1.dmg`, `CTX-Apple-Intel-v0.1.dmg`, `CTX-Windows-x64-v0.1.exe`, `CTX-Linux-x64-v0.1.tar.gz`.
+- macOS archives unpack to `ctx` / `CTX.app`. The rustc triple (`ctx-aarch64-apple-darwin`) is not the download name.
+
 ## 0.2.2
 
 - GitHub Release installers use readable names: `CTX-Apple-Arm-v0.2.2.dmg`, `CTX-Apple-Intel-v0.2.2.dmg`, `CTX-Windows-x64-v0.2.2.exe`, `CTX-Linux-x64-v0.2.2.tar.gz`.

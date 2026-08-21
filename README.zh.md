@@ -38,7 +38,7 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.2.2.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.2.2/CTX-Apple-Arm-v0.2.2.dmg)**（Intel 用 `CTX-Apple-Intel-v0.2.2.dmg`）。打开后把 **CTX.app** 拖进「应用程序」。带 `-cli-` 的是命令行，不是安装包。
+**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.1.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1/CTX-Apple-Arm-v0.1.dmg)**（Intel 用 `CTX-Apple-Intel-v0.1.dmg`）。打开后把 **CTX.app** 拖进「应用程序」。带 `-cli-` 的是命令行，不是安装包。
 
 第一次打开若提示无法验证：按住 Control 点 CTX.app → 打开。
 
