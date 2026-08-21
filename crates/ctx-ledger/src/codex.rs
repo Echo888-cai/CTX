@@ -4,7 +4,9 @@ use std::path::Path;
 use ctx_store::{LedgerTurn, Store};
 use serde_json::Value;
 
-use crate::{ingest_turns, now_unix_from_rfc3339, parse_model, SyncReport};
+use crate::{
+    commit_source, ingest_turns, json_i64, parse_model, read_new_text, ts_secs, SyncReport,
+};
 
 pub fn sync(store: &Store) -> SyncReport {
     let mut report = SyncReport::default();
@@ -31,26 +33,39 @@ fn walk_jsonl(dir: &Path, store: &Store, report: &mut SyncReport) {
 }
 
 fn sync_file(store: &Store, path: &Path) -> SyncReport {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Some(delta) = read_new_text(store, path) else {
         return SyncReport {
             files: 1,
             errors: vec![format!("read {}", path.display())],
             ..SyncReport::default()
         };
     };
-    let turns = parse_jsonl(&text, path);
+    if delta.unchanged || delta.text.is_empty() {
+        return SyncReport {
+            files: 1,
+            ..SyncReport::default()
+        };
+    }
+    let seed = extra_model(&delta.extra);
+    let (turns, model) = parse_jsonl_seeded(&delta.text, path, &seed);
     let mut inner = ingest_turns(store, &turns);
     inner.files = 1;
+    commit_source(store, path, extra_from_model(&model));
     inner
 }
 
+#[cfg(test)]
 pub fn parse_jsonl(text: &str, path: &Path) -> Vec<LedgerTurn> {
+    parse_jsonl_seeded(text, path, "").0
+}
+
+fn parse_jsonl_seeded(text: &str, path: &Path, seed_model: &str) -> (Vec<LedgerTurn>, String) {
     let session = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    let mut model = String::new();
+    let mut model = seed_model.to_string();
     let mut turns = Vec::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -69,11 +84,7 @@ pub fn parse_jsonl(text: &str, path: &Path) -> Vec<LedgerTurn> {
         let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
         if ty == "compacted" {
             turns.push(LedgerTurn {
-                ts: v
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .and_then(now_unix_from_rfc3339)
-                    .unwrap_or(0),
+                ts: v.get("timestamp").map(ts_secs).unwrap_or(0),
                 harness: "codex".into(),
                 session: session.clone(),
                 is_compaction: true,
@@ -87,7 +98,22 @@ pub fn parse_jsonl(text: &str, path: &Path) -> Vec<LedgerTurn> {
             turns.push(turn);
         }
     }
-    turns
+    (turns, model)
+}
+
+fn extra_model(extra: &str) -> String {
+    serde_json::from_str::<Value>(extra)
+        .ok()
+        .and_then(|v| v.get("model").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn extra_from_model(model: &str) -> String {
+    if model.is_empty() {
+        String::new()
+    } else {
+        format!(r#"{{"model":{}}}"#, serde_json::to_string(model).unwrap_or_else(|_| "\"\"".into()))
+    }
 }
 
 fn token_count(v: &Value, session: &str, model: &str, path: &Path) -> Option<LedgerTurn> {
@@ -102,11 +128,7 @@ fn token_count(v: &Value, session: &str, model: &str, path: &Path) -> Option<Led
     let parsed = parse_model(model);
     let rates = v.get("payload").and_then(|p| p.get("rate_limits"));
     Some(LedgerTurn {
-        ts: v
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(now_unix_from_rfc3339)
-            .unwrap_or(0),
+        ts: v.get("timestamp").map(ts_secs).unwrap_or(0),
         harness: "codex".into(),
         session: session.to_string(),
         cwd: String::new(),
@@ -120,7 +142,8 @@ fn token_count(v: &Value, session: &str, model: &str, path: &Path) -> Option<Led
         },
         input_tokens: json_i64(last, "input_tokens"),
         output_tokens: json_i64(last, "output_tokens"),
-        cache_read_tokens: json_i64(last, "cached_input_tokens"),
+        cache_read_tokens: json_i64(last, "cached_input_tokens")
+            .max(json_i64(last, "prompt_cache_hit_tokens")),
         cache_write_5m: json_i64(last, "cache_write_input_tokens"),
         cache_write_1h: 0,
         reasoning_tokens: json_i64(last, "reasoning_output_tokens"),
@@ -154,10 +177,6 @@ fn token_count(v: &Value, session: &str, model: &str, path: &Path) -> Option<Led
         },
         source_path: path.display().to_string(),
     })
-}
-
-fn json_i64(v: &Value, key: &str) -> i64 {
-    v.get(key).and_then(Value::as_i64).unwrap_or(0)
 }
 
 #[cfg(test)]

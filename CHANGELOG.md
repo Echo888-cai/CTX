@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Dashboard ledger syncs live (~1s): Claude / Codex from provider usage, Cursor from context-window prefix inference when local `cache_read` is missing.
+- Cache hit rate matches CC Switch: `cache_read / (fresh + cache_write + cache_read)`; date windows use `until`; local timezone for「当天」.
+- Pricing refresh can overlay models.dev cache/output tiers; empty ledger states explain measured vs inferred.
+
 ## 0.1.2
 
 - Opening CTX.app wires detected IDEs (Cursor, Claude Code, ChatGPT). Quitting pauses saving. Deleting the app restores those IDE configs.

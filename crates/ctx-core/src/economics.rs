@@ -1,6 +1,6 @@
 //! Cache economics: compact only when keeping the hot prefix is more expensive.
 
-use ctx_store::LedgerTurn;
+use ctx_store::{token_weighted_hit_rate, LedgerTurn};
 use ctx_telemetry::{PriceBook, round_usd};
 
 #[derive(Debug, Clone)]
@@ -16,11 +16,7 @@ pub struct CompactAdvice {
 
 /// `remaining_turns` is how many more model rounds we expect in this epoch.
 pub fn advise(turns: &[LedgerTurn], remaining_turns: u32, book: &PriceBook) -> CompactAdvice {
-    let hit_rate = if turns.is_empty() {
-        0.0
-    } else {
-        turns.iter().map(|t| t.cache_hit_rate()).sum::<f64>() / turns.len() as f64
-    };
+    let hit_rate = token_weighted_hit_rate(turns).unwrap_or(0.0);
     let last_read = turns.last().map(|t| t.cache_read_tokens).unwrap_or(0);
     let prev_read = turns
         .iter()

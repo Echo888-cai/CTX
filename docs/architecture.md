@@ -45,7 +45,7 @@ Adapters convert Claude `PostToolUse` / Cursor `postToolUse` into one `CtxEvent`
 
 ```text
 ~/.ctx/          (or $CTX_HOME; unwritable home is an error — set CTX_HOME, never ./.ctx)
-  ctx.db         schema v11 — pages, frames, sessions, observations, FTS5, ledger, epochs, overlays
+  ctx.db         schema v13 — pages, frames, sessions, observations, FTS5, ledger, epochs, overlays, ledger_sources
   store/xx/yy.zst
   config.json
   snapshots/

@@ -39,6 +39,17 @@ impl TierRates {
         }
     }
 
+    pub fn xai(input: f64) -> Self {
+        Self {
+            input,
+            output: input * 3.0,
+            cache_read: input * 0.1,
+            cache_write_5m: input,
+            cache_write_1h: input,
+            thinking: input * 3.0,
+        }
+    }
+
     pub fn generic(input: f64) -> Self {
         Self {
             input,
@@ -54,9 +65,17 @@ impl TierRates {
         let l = model.to_ascii_lowercase();
         if l.contains("claude") || l.contains("anthropic") {
             Self::anthropic(input)
-        } else if l.contains("gpt") || l.contains("o3") || l.contains("o4") || l.contains("codex")
+        } else if l.contains("gpt")
+            || l.contains("o3")
+            || l.contains("o4")
+            || l.contains("codex")
+            || l.contains("sol")
+            || l.contains("terra")
+            || l.contains("luna")
         {
             Self::openai(input)
+        } else if l.contains("grok") || l.contains("composer") {
+            Self::xai(input)
         } else {
             Self::generic(input)
         }
@@ -78,9 +97,9 @@ impl TierRates {
 impl PriceBook {
     pub fn tier(&self, model_id: &str) -> Option<TierRates> {
         let quote = self.quote(model_id)?;
-        Some(TierRates::for_model(
+        Some(self.overlay_rates(
             &quote.matched_id,
-            quote.usd_per_mtok,
+            TierRates::for_model(&quote.matched_id, quote.usd_per_mtok),
         ))
     }
 

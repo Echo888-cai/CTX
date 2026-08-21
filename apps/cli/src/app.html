@@ -742,8 +742,12 @@ function renderSources(rows) {
     };
   });
 }
-function heatTier(rate) {
+function heatTier(rate, kind) {
   if (rate == null || Number.isNaN(rate)) return { name: "还没有记录", cls: "" };
+  if (kind === "inferred") {
+    if (rate >= 0.80) return { name: "前缀很热", cls: "heat-shine tier-blue" };
+    return { name: "推断中", cls: "heat-shine tier-plain" };
+  }
   if (rate >= 0.95) return { name: "极致", cls: "heat-shine tier-apex" };
   if (rate >= 0.80) return { name: "超高", cls: "heat-shine tier-gold" };
   if (rate >= 0.60) return { name: "优秀", cls: "heat-shine tier-blue" };
@@ -753,8 +757,9 @@ function renderLedger(led) {
   const L = led || {};
   const rate = L.hit_rate == null ? null : Number(L.hit_rate);
   const pct = rate == null ? null : Math.round(rate * 100);
-  const tier = heatTier(rate);
-  const sig = `${pct}|${tier.cls}`;
+  const kind = L.kind || (pct == null ? "empty" : "measured");
+  const tier = heatTier(rate, kind);
+  const sig = `${pct}|${tier.cls}|${kind}`;
   const hit = $("led-hit");
   if (hit.dataset.sig !== sig) {
     hit.dataset.sig = sig;
@@ -765,10 +770,16 @@ function renderLedger(led) {
   }
   $("led-read").textContent = compact(Number(L.cache_read_tokens || 0));
   $("led-usd").textContent = L.usd != null ? money(L.usd) : "—";
-  $("ledger-kind").textContent = "全部接入工具";
-  $("led-hit-sub").textContent = pct == null
-    ? "还没有 provider 缓存记录。"
-    : "已接入的 Cursor、Claude Code、ChatGPT 合计，与模型筛选无关。";
+  $("ledger-kind").textContent = kind === "inferred" ? "Cursor 推断 · 约每秒" : kind === "mixed" ? "实测 + 推断 · 实时" : "全部接入工具 · 实时";
+  if (pct == null) {
+    $("led-hit-sub").textContent = "看板会自动同步账本。Claude / Codex 来自厂商 usage；Cursor 本地不写 cache_read，按会话上下文窗口推断前缀命中。";
+  } else if (kind === "inferred" || L.cursor_inferred) {
+    $("led-hit-sub").textContent = "Cursor 本地没有 cache_read 字段。这是按上下文窗口前缀推断的命中率，不是账单数字。";
+  } else if (kind === "mixed") {
+    $("led-hit-sub").textContent = "Claude / Codex 实测 cache_read，加上 Cursor 按窗口推断的前缀命中。";
+  } else {
+    $("led-hit-sub").textContent = "cache_read / (新输入 + 写缓存 + 读缓存)，与 CC Switch 相同。与模型筛选无关。";
+  }
 }
 function updateOptions(options, selected) {
   state.models = [{ id: "all", name: "全部模型" }].concat(Array.isArray(options) ? options : []);
@@ -849,7 +860,10 @@ async function refresh(force) {
     const data = await response.json();
     if (request === state.request && data.ok !== false) render(data);
   } catch (_) {
-    if (request === state.request) render({ ...DEMO, range: state.range, model: state.model });
+    if (request === state.request) {
+      if (state.last && state.last.ok !== false) render(state.last);
+      else render({ ...DEMO, range: state.range, model: state.model });
+    }
   }
 }
 async function post(url, body) {
@@ -1168,7 +1182,7 @@ $("cfg-enabled").addEventListener("change", () => {
 });
 render(DEMO);
 refresh();
-state.poll = setInterval(refresh, 2000);
+state.poll = setInterval(refresh, 1000);
 </script>
 </body>
 </html>

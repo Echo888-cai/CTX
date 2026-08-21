@@ -22,12 +22,13 @@ pub struct ModelRow {
 impl Store {
     pub fn dashboard_totals(&self, since: i64, model: Option<&str>) -> Result<TokenTotals> {
         let owned = model.map(|m| vec![m.to_string()]);
-        self.dashboard_totals_for(since, owned.as_deref())
+        self.dashboard_totals_for(since, i64::MAX, owned.as_deref())
     }
 
     pub fn dashboard_totals_for(
         &self,
         since: i64,
+        until: i64,
         models: Option<&[String]>,
     ) -> Result<TokenTotals> {
         let conn = self.reader();
@@ -39,8 +40,8 @@ impl Store {
                         COALESCE(SUM(delivered_tokens), 0),
                         COALESCE(SUM(avoided_tokens), 0),
                         COALESCE(SUM(refetched_tokens), 0)
-                     FROM observations WHERE created_at >= ?1",
-                    params![since],
+                     FROM observations WHERE created_at >= ?1 AND created_at <= ?2",
+                    params![since, until],
                     map_totals,
                 )
                 .map_err(Into::into);
@@ -54,14 +55,18 @@ impl Store {
                 COALESCE(SUM(o.refetched_tokens), 0)
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.created_at >= ?1
+             WHERE o.created_at >= ?1 AND o.created_at <= ?2
                AND ({filter})"
         );
         conn.query_row(
             &sql,
             params_from_iter(
-                std::iter::once(rusqlite::types::Value::from(since))
-                    .chain(binds.into_iter().map(Into::into)),
+                [
+                    rusqlite::types::Value::from(since),
+                    rusqlite::types::Value::from(until),
+                ]
+                .into_iter()
+                .chain(binds.into_iter().map(Into::into)),
             ),
             map_totals,
         )
@@ -69,6 +74,10 @@ impl Store {
     }
 
     pub fn dashboard_models(&self, since: i64) -> Result<Vec<ModelRow>> {
+        self.dashboard_models_between(since, i64::MAX)
+    }
+
+    pub fn dashboard_models_between(&self, since: i64, until: i64) -> Result<Vec<ModelRow>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT COALESCE(NULLIF(o.model, ''), NULLIF(s.model, ''), '__unknown__'),
@@ -80,11 +89,11 @@ impl Store {
                     GROUP_CONCAT(DISTINCT s.harness)
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.created_at >= ?1
+             WHERE o.created_at >= ?1 AND o.created_at <= ?2
              GROUP BY 1
              ORDER BY SUM(o.avoided_tokens) DESC",
         )?;
-        let rows = stmt.query_map(params![since], |r| {
+        let rows = stmt.query_map(params![since, until], |r| {
             Ok(ModelRow {
                 id: r.get(0)?,
                 sessions: r.get::<_, i64>(1)? as u64,
@@ -114,12 +123,13 @@ impl Store {
         model: Option<&str>,
     ) -> Result<Vec<SeriesPoint>> {
         let owned = model.map(|m| vec![m.to_string()]);
-        self.dashboard_series_for(since, bucket, tz, owned.as_deref())
+        self.dashboard_series_for(since, i64::MAX, bucket, tz, owned.as_deref())
     }
 
     pub fn dashboard_series_for(
         &self,
         since: i64,
+        until: i64,
         bucket: i64,
         tz: i64,
         models: Option<&[String]>,
@@ -132,11 +142,11 @@ impl Store {
                         COALESCE(SUM(raw_tokens), 0),
                         COALESCE(SUM(delivered_tokens), 0)
                  FROM observations
-                 WHERE created_at >= ?1
+                 WHERE created_at >= ?1 AND created_at <= ?4
                  GROUP BY 1
                  ORDER BY 1",
             )?;
-            for row in stmt.query_map(params![since, tz, bucket], map_point)? {
+            for row in stmt.query_map(params![since, tz, bucket, until], map_point)? {
                 points.push(row?);
             }
             return Ok(points);
@@ -148,7 +158,7 @@ impl Store {
                     COALESCE(SUM(o.delivered_tokens), 0)
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.created_at >= ?1
+             WHERE o.created_at >= ?1 AND o.created_at <= ?4
                AND ({filter})
              GROUP BY 1
              ORDER BY 1"
@@ -159,6 +169,7 @@ impl Store {
                 rusqlite::types::Value::from(since),
                 rusqlite::types::Value::from(tz),
                 rusqlite::types::Value::from(bucket),
+                rusqlite::types::Value::from(until),
             ]
             .into_iter()
             .chain(binds.into_iter().map(Into::into)),
@@ -175,12 +186,13 @@ impl Store {
         model: Option<&str>,
     ) -> Result<Vec<(String, TokenTotals)>> {
         let owned = model.map(|m| vec![m.to_string()]);
-        self.dashboard_by_harness_for(since, owned.as_deref())
+        self.dashboard_by_harness_for(since, i64::MAX, owned.as_deref())
     }
 
     pub fn dashboard_by_harness_for(
         &self,
         since: i64,
+        until: i64,
         models: Option<&[String]>,
     ) -> Result<Vec<(String, TokenTotals)>> {
         let conn = self.reader();
@@ -204,11 +216,11 @@ impl Store {
                         COALESCE(SUM(o.refetched_tokens), 0)
                  FROM observations o
                  LEFT JOIN sessions s ON s.id = o.session_id
-                 WHERE o.created_at >= ?1
+                 WHERE o.created_at >= ?1 AND o.created_at <= ?2
                  GROUP BY 1",
             )?;
             return stmt
-                .query_map(params![since], map)?
+                .query_map(params![since, until], map)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(Into::into);
         };
@@ -221,14 +233,18 @@ impl Store {
                     COALESCE(SUM(o.refetched_tokens), 0)
              FROM observations o
              LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.created_at >= ?1
+             WHERE o.created_at >= ?1 AND o.created_at <= ?2
                AND ({filter})
              GROUP BY 1"
         );
         let mut stmt = conn.prepare(&sql)?;
         let iter = params_from_iter(
-            std::iter::once(rusqlite::types::Value::from(since))
-                .chain(binds.into_iter().map(Into::into)),
+            [
+                rusqlite::types::Value::from(since),
+                rusqlite::types::Value::from(until),
+            ]
+            .into_iter()
+            .chain(binds.into_iter().map(Into::into)),
         );
         let rows = stmt
             .query_map(iter, map)?
@@ -354,7 +370,7 @@ mod tests {
             (50, 20, 30)
         );
         let both = store
-            .dashboard_totals_for(0, Some(&["gpt-5".into(), "__unknown__".into()]))
+            .dashboard_totals_for(0, i64::MAX, Some(&["gpt-5".into(), "__unknown__".into()]))
             .unwrap();
         assert_eq!(both.raw, 150);
     }

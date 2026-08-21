@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const OFFICIAL_SOURCE: &str = "https://cursor.com/docs/models-and-pricing.md";
+const MODELS_DEV_SOURCE: &str = "https://models.dev/api.json";
 const CACHE_TTL_SECS: i64 = 12 * 3600;
 const FALLBACK_MODEL: &str = "grok-4.6";
 
@@ -115,8 +116,16 @@ pub struct PriceQuote {
 #[derive(Debug, Clone)]
 pub struct PriceBook {
     prices: HashMap<String, (f64, PriceSource)>,
+    extras: HashMap<String, RateExtra>,
     aliases: HashMap<String, String>,
     default_billing_model: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RateExtra {
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,15 +145,23 @@ impl PriceBook {
         for (from, to) in ALIASES {
             aliases.insert((*from).to_string(), (*to).to_string());
         }
+        let mut extras = HashMap::new();
         merge_overrides(
             &mut prices,
+            &mut extras,
             &paths.official_prices_path(),
             PriceSource::Official,
         );
-        merge_overrides(&mut prices, &paths.prices_path(), PriceSource::Override);
+        merge_overrides(
+            &mut prices,
+            &mut extras,
+            &paths.prices_path(),
+            PriceSource::Override,
+        );
         let default = default_billing_model.trim();
         Self {
             prices,
+            extras,
             aliases,
             default_billing_model: if default.is_empty() {
                 FALLBACK_MODEL.to_string()
@@ -327,6 +344,8 @@ pub fn catalog_json() -> Value {
                     "id": e.id,
                     "name": e.name,
                     "input_usd_per_mtok": e.input_usd_per_mtok,
+                    "cache_read_usd_per_mtok": crate::TierRates::for_model(e.id, e.input_usd_per_mtok).cache_read,
+                    "output_usd_per_mtok": crate::TierRates::for_model(e.id, e.input_usd_per_mtok).output,
                 })
             })
             .collect(),
@@ -388,6 +407,12 @@ fn refresh_official_prices_inner(paths: &CtxPaths, force: bool) -> bool {
     );
     for (id, usd) in parsed {
         obj.insert(id, serde_json::json!(usd));
+    }
+    if let Some(dev) = fetch_text(MODELS_DEV_SOURCE) {
+        merge_models_dev(&mut obj, &dev);
+        if let Some(meta) = obj.get_mut("_meta").and_then(|v| v.as_object_mut()) {
+            meta.insert("models_dev".into(), serde_json::json!(true));
+        }
     }
     let Ok(bytes) = serde_json::to_vec_pretty(&Value::Object(obj)) else {
         return false;
@@ -556,10 +581,17 @@ fn ids_for_model_name(name: &str) -> Vec<String> {
 #[derive(Deserialize)]
 struct PriceOverride {
     input_usd_per_mtok: f64,
+    #[serde(default)]
+    output_usd_per_mtok: Option<f64>,
+    #[serde(default)]
+    cache_read_usd_per_mtok: Option<f64>,
+    #[serde(default)]
+    cache_write_usd_per_mtok: Option<f64>,
 }
 
 fn merge_overrides(
     prices: &mut HashMap<String, (f64, PriceSource)>,
+    extras: &mut HashMap<String, RateExtra>,
     path: &std::path::Path,
     source: PriceSource,
 ) {
@@ -576,16 +608,96 @@ fn merge_overrides(
         if id.starts_with('_') {
             continue;
         }
-        let usd = if let Some(n) = spec.as_f64() {
-            n
+        let (usd, extra) = if let Some(n) = spec.as_f64() {
+            (n, RateExtra::default())
         } else if let Ok(row) = serde_json::from_value::<PriceOverride>(spec.clone()) {
-            row.input_usd_per_mtok
+            (
+                row.input_usd_per_mtok,
+                RateExtra {
+                    output: row.output_usd_per_mtok,
+                    cache_read: row.cache_read_usd_per_mtok,
+                    cache_write: row.cache_write_usd_per_mtok,
+                },
+            )
         } else {
             continue;
         };
         if usd >= 0.0 && usd.is_finite() {
-            prices.insert(normalize(id), (usd, source));
+            let key = normalize(id);
+            prices.insert(key.clone(), (usd, source));
+            if extra.output.is_some() || extra.cache_read.is_some() || extra.cache_write.is_some() {
+                extras.insert(key, extra);
+            }
         }
+    }
+}
+
+fn merge_models_dev(obj: &mut serde_json::Map<String, Value>, body: &str) {
+    let Ok(root) = serde_json::from_str::<Value>(body) else {
+        return;
+    };
+    let Some(providers) = root.as_object() else {
+        return;
+    };
+    let catalog: Vec<String> = CATALOG.iter().map(|(id, _, _)| normalize(id)).collect();
+    for provider in providers.values() {
+        let Some(models) = provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for (id, spec) in models {
+            let Some(cost) = spec.get("cost") else {
+                continue;
+            };
+            let Some(input) = cost.get("input").and_then(Value::as_f64) else {
+                continue;
+            };
+            if !(input >= 0.0 && input.is_finite()) {
+                continue;
+            }
+            let key = normalize(id);
+            if !catalog.iter().any(|c| c == &key) && !obj.contains_key(&key) {
+                continue;
+            }
+            let mut row = serde_json::Map::new();
+            row.insert("input_usd_per_mtok".into(), serde_json::json!(input));
+            if let Some(n) = cost.get("output").and_then(Value::as_f64) {
+                row.insert("output_usd_per_mtok".into(), serde_json::json!(n));
+            }
+            if let Some(n) = cost
+                .get("cache_read")
+                .or_else(|| cost.get("cacheRead"))
+                .and_then(Value::as_f64)
+            {
+                row.insert("cache_read_usd_per_mtok".into(), serde_json::json!(n));
+            }
+            if let Some(n) = cost
+                .get("cache_write")
+                .or_else(|| cost.get("cacheWrite"))
+                .and_then(Value::as_f64)
+            {
+                row.insert("cache_write_usd_per_mtok".into(), serde_json::json!(n));
+            }
+            obj.insert(key, Value::Object(row));
+        }
+    }
+}
+
+impl PriceBook {
+    pub(crate) fn overlay_rates(&self, matched_id: &str, mut rates: crate::TierRates) -> crate::TierRates {
+        if let Some(ex) = self.extras.get(matched_id) {
+            if let Some(output) = ex.output {
+                rates.output = output;
+                rates.thinking = output;
+            }
+            if let Some(cache_read) = ex.cache_read {
+                rates.cache_read = cache_read;
+            }
+            if let Some(cache_write) = ex.cache_write {
+                rates.cache_write_5m = cache_write;
+                rates.cache_write_1h = cache_write;
+            }
+        }
+        rates
     }
 }
 

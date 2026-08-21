@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use crate::Result;
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -392,6 +392,20 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 description TEXT NOT NULL DEFAULT '',
                 schema_json TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER NOT NULL
+            );
+            "#,
+        );
+    }
+
+    if current < 13 {
+        let _ = conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS ledger_sources (
+                path TEXT PRIMARY KEY,
+                mtime INTEGER NOT NULL DEFAULT 0,
+                size INTEGER NOT NULL DEFAULT 0,
+                offset INTEGER NOT NULL DEFAULT 0,
+                extra TEXT NOT NULL DEFAULT ''
             );
             "#,
         );

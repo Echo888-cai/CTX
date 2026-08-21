@@ -1,8 +1,9 @@
 use ctx_core::{
-    catalog_json, compact_advise, fmt_compact, start_of_today, Config, CtxPaths, LedgerTurn,
-    ModelRow, PriceBook, Runtime, Snapshot, Store,
+    catalog_json, compact_advise, fmt_compact, start_of_today, token_weighted_hit_rate, Config,
+    CtxPaths, LedgerTurn, ModelRow, PriceBook, Runtime, Snapshot, Store,
 };
 use serde_json::{json, Value};
+use std::time::Duration;
 
 pub fn run(json: bool) -> anyhow::Result<()> {
     if json {
@@ -44,7 +45,7 @@ pub fn payload() -> anyhow::Result<Value> {
         "priced_models": money.priced_models,
         "unpriced_models": money.unpriced_models,
         "default_billing_model": rt.config.default_billing_model,
-        "composition": composition_rows(&rt.store, start_of_today(), snap.today),
+        "composition": composition_rows(&rt.store, start_of_today(), i64::MAX, snap.today),
         "reasons": snap.reasons_today,
         "recent": recent,
         "highlight": recent.first().cloned().unwrap_or(json!(null)),
@@ -59,8 +60,9 @@ pub fn payload() -> anyhow::Result<Value> {
 /// id, or `__unknown__` for sessions whose harness did not report a model.
 pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -> anyhow::Result<Value> {
     let rt = Runtime::open_default()?;
+    let sync = ctx_ledger::sync_if_due(&rt.store, Duration::from_millis(800));
     let now = now_unix();
-    let tz = 8 * 3600;
+    let tz = local_tz_offset(now);
     let (range, since, until, mut bucket) = resolve_window(range, from, to, now, tz);
     let (start_bucket, _last_bucket, count) = {
         let mut first = align(since, bucket, tz);
@@ -80,7 +82,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
     let book = load_price_book(&rt.config);
     let mut raw_models = rt
         .store
-        .dashboard_models(since)?
+        .dashboard_models_between(since, until)?
         .into_iter()
         .collect::<Vec<_>>();
     raw_models.sort_by(|a, b| {
@@ -102,7 +104,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
     });
     let totals = rt
         .store
-        .dashboard_totals_for(since, filter_ids.as_deref())?;
+        .dashboard_totals_for(since, until, filter_ids.as_deref())?;
     let all_models = merge_model_rows(&book, raw_models);
     let model_options = all_models
         .iter()
@@ -124,7 +126,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
     let money = price_summary(&models);
     let sparse = rt
         .store
-        .dashboard_series_for(since, bucket, tz, filter_ids.as_deref())?;
+        .dashboard_series_for(since, until, bucket, tz, filter_ids.as_deref())?;
     let series = (0..count)
         .map(|i| {
             let t = start_bucket + (i as i64) * bucket;
@@ -140,7 +142,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         .collect::<Vec<_>>();
     let by_harness = rt
         .store
-        .dashboard_by_harness_for(since, filter_ids.as_deref())?
+        .dashboard_by_harness_for(since, until, filter_ids.as_deref())?
         .into_iter()
         .map(|(id, t)| {
             json!({
@@ -177,7 +179,7 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "priced_models": money.priced_models,
         "unpriced_models": money.unpriced_models,
         "default_billing_model": rt.config.default_billing_model,
-        "composition": composition_rows(&rt.store, since, totals),
+        "composition": composition_rows(&rt.store, since, until, totals),
         "by_harness": by_harness
             .into_iter()
             .filter(|row| {
@@ -189,34 +191,66 @@ pub fn dashboard(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -
         "price_catalog": catalog_json(),
         "pages": rt.store.page_count().unwrap_or(0),
         "store_bytes": rt.store.compressed_bytes().unwrap_or(0),
-        "reasons": optimizer_rows(&rt.store, since),
+        "reasons": optimizer_rows(&rt.store, since, until),
         "recent": feed_rows(&rt.store),
         "snapshots": snapshot_rows(&rt.store),
-        "ledger": ledger_json(&rt.store, since, &book),
+        "ledger": ledger_json(&rt.store, since, until, &book, &sync),
         "epochs": rt.store.epoch_count().unwrap_or(0),
         "overlays": rt.store.overlay_count().unwrap_or(0),
+        "synced_at": now,
+        "sync": {
+            "inserted": sync.inserted,
+            "skipped": sync.skipped,
+            "files": sync.files,
+        },
     }))
 }
 
-fn ledger_json(store: &Store, since: i64, book: &PriceBook) -> Value {
-    let totals = store.ledger_totals_since(since).unwrap_or_default();
-    let turns = store.ledger_since(since).unwrap_or_default();
+fn ledger_json(
+    store: &Store,
+    since: i64,
+    until: i64,
+    book: &PriceBook,
+    sync: &ctx_ledger::SyncReport,
+) -> Value {
+    let totals = store.ledger_totals_between(since, until).unwrap_or_default();
+    let turns = store.ledger_between(since, until).unwrap_or_default();
     let usd = book.turns_usd(&turns);
     let advice = compact_advise(&turns, 3, book);
     let avoided_compact = ctx_core::avoided_compact_usd(&turns, book);
     let hit_rate = ledger_hit_rate(&turns);
-    let (faults, recalled) = store.refetch_totals_since(since).unwrap_or((0, 0));
+    let (faults, recalled) = store.refetch_totals_between(since, until).unwrap_or((0, 0));
     let miss_turns = turns.iter().filter(|t| t.cache_read_tokens == 0).count();
-    let miss_tokens: i64 = turns.iter().map(|t| {
-        if t.cache_read_tokens == 0 {
-            t.uncached_input()
-        } else {
-            0
-        }
-    }).sum();
+    let miss_tokens: i64 = turns
+        .iter()
+        .map(|t| {
+            if t.cache_read_tokens == 0 {
+                t.uncached_input()
+            } else {
+                0
+            }
+        })
+        .sum();
     let passed = store.clean_sessions_since(since).unwrap_or(0);
+    let inferred = turns.iter().filter(|t| t.confidence == "inferred").count();
+    let measured = turns
+        .iter()
+        .filter(|t| t.confidence == "measured" || t.confidence == "partial")
+        .count();
+    let kind = if totals.turns == 0 {
+        "empty"
+    } else if measured == 0 && inferred > 0 {
+        "inferred"
+    } else if inferred > 0 {
+        "mixed"
+    } else {
+        "measured"
+    };
+    let cursor_only = !turns.is_empty() && turns.iter().all(|t| t.harness == "cursor");
     json!({
-        "kind": if totals.turns == 0 { "empty" } else { "measured" },
+        "kind": kind,
+        "confidence": if inferred > 0 && measured == 0 { "inferred" } else { "measured" },
+        "cursor_inferred": cursor_only && inferred > 0,
         "turns": totals.turns,
         "input_tokens": totals.input_tokens,
         "output_tokens": totals.output_tokens,
@@ -236,6 +270,8 @@ fn ledger_json(store: &Store, since: i64, book: &PriceBook) -> Value {
         "recalled_tokens": recalled,
         "retries": faults,
         "task_passed": passed,
+        "synced_at": now_unix(),
+        "sync_inserted": sync.inserted,
         "advice": {
             "keep_cache": advice.keep_cache,
             "reason": advice.reason,
@@ -246,14 +282,14 @@ fn ledger_json(store: &Store, since: i64, book: &PriceBook) -> Value {
 
 /// One bar: what actually reached the model, then why the rest did not.
 /// Segments sum to raw so the bar is readable as the whole context.
-fn composition_rows(store: &Store, since: i64, totals: ctx_core::TokenTotals) -> Vec<Value> {
+fn composition_rows(store: &Store, since: i64, until: i64, totals: ctx_core::TokenTotals) -> Vec<Value> {
     let mut rows = vec![json!({
         "key": "delivered",
         "label": "有效输入",
         "tokens": totals.delivered,
         "kept": true,
     })];
-    let reasons = store.reason_breakdown_since(since).unwrap_or_default();
+    let reasons = store.reason_breakdown_between(since, until).unwrap_or_default();
     let tallied: u64 = reasons.iter().map(|(_, n)| *n).sum();
     let mut sorted = reasons;
     sorted.sort_by_key(|(_, tokens)| std::cmp::Reverse(*tokens));
@@ -283,8 +319,8 @@ fn composition_rows(store: &Store, since: i64, totals: ctx_core::TokenTotals) ->
     rows
 }
 
-fn optimizer_rows(store: &Store, since: i64) -> Vec<Value> {
-    let rows = store.reason_breakdown_since(since).unwrap_or_default();
+fn optimizer_rows(store: &Store, since: i64, until: i64) -> Vec<Value> {
+    let rows = store.reason_breakdown_between(since, until).unwrap_or_default();
     let total: u64 = rows.iter().map(|(_, n)| *n).sum::<u64>().max(1);
     rows.into_iter()
         .map(|(label, tokens)| {
@@ -339,21 +375,9 @@ fn snapshot_rows(store: &Store) -> Vec<Value> {
 
 /// Provider cache-read share across every harness that wrote ledger turns.
 /// Token-weighted, not split by model. Codex input already includes cache reads.
+/// Denominator includes cache writes (CC Switch cacheable-input).
 fn ledger_hit_rate(turns: &[LedgerTurn]) -> Option<f64> {
-    if turns.is_empty() {
-        return None;
-    }
-    let mut read = 0i64;
-    let mut denom = 0i64;
-    for turn in turns {
-        let cache = turn.cache_read_tokens.max(0);
-        read += cache;
-        denom += turn.uncached_input() + cache;
-    }
-    if denom <= 0 {
-        return Some(0.0);
-    }
-    Some(read as f64 / denom as f64)
+    token_weighted_hit_rate(turns)
 }
 
 fn harness_label(id: &str) -> String {
@@ -535,16 +559,16 @@ fn resolve_window(
     from: Option<i64>,
     to: Option<i64>,
     now: i64,
-    tz: i64,
+    _tz: i64,
 ) -> (&'static str, i64, i64, i64) {
     let custom = from.zip(to).map(|(a, b)| {
-        let start = a.min(b);
-        let end = a.max(b).clamp(start + 60, now);
-        (start, end)
+        let start = a.min(b).min(now);
+        let end = a.max(b).clamp(start, now).max(start);
+        (start, end.max(start))
     });
     let (key, since, until) = match (range, custom) {
         ("custom", Some((start, end))) => ("custom", start, end),
-        ("today", _) => ("today", start_of_local_day(now, tz), now),
+        ("today", _) => ("today", start_of_today(), now),
         ("1d" | "24h", _) => ("1d", now.saturating_sub(24 * 3600), now),
         ("14d", _) => ("14d", now.saturating_sub(14 * 86400), now),
         ("30d", _) => ("30d", now.saturating_sub(30 * 86400), now),
@@ -561,6 +585,12 @@ fn resolve_window(
     (key, since, until, bucket)
 }
 
+fn local_tz_offset(now: i64) -> i64 {
+    let elapsed = now.saturating_sub(start_of_today());
+    elapsed - now.rem_euclid(86400)
+}
+
+#[allow(dead_code)]
 fn start_of_local_day(now: i64, tz: i64) -> i64 {
     let local = now + tz;
     local - local.rem_euclid(86400) - tz
@@ -620,6 +650,10 @@ fn with_price(book: &PriceBook, mut row: Value) -> Value {
     match book.quote(&id) {
         Some(quote) => {
             row["input_usd_per_mtok"] = json!(quote.usd_per_mtok);
+            if let Some(tier) = book.tier(&id) {
+                row["cache_read_usd_per_mtok"] = json!(tier.cache_read);
+                row["output_usd_per_mtok"] = json!(tier.output);
+            }
             row["avoided_usd"] = json!(ctx_core::round_usd(
                 avoided as f64 / 1_000_000.0 * quote.usd_per_mtok
             ));
@@ -858,6 +892,15 @@ mod tests {
         let rate = ledger_hit_rate(&[cursor, codex]).unwrap();
         assert!((rate - 0.85).abs() < 1e-9);
         assert!(ledger_hit_rate(&[]).is_none());
+        let with_write = LedgerTurn {
+            harness: "claude-code".into(),
+            input_tokens: 5_000,
+            cache_read_tokens: 40_000,
+            cache_write_5m: 5_000,
+            ..LedgerTurn::default()
+        };
+        let write_rate = ledger_hit_rate(&[with_write]).unwrap();
+        assert!((write_rate - 0.8).abs() < 1e-9);
     }
 
     #[test]

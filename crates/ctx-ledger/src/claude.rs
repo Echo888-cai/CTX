@@ -4,7 +4,9 @@ use std::path::Path;
 use ctx_store::{LedgerTurn, Store};
 use serde_json::Value;
 
-use crate::{ingest_turns, now_unix_from_rfc3339, parse_model, SyncReport};
+use crate::{
+    commit_source, ingest_turns, json_i64, parse_model, read_new_text, ts_secs, SyncReport,
+};
 
 pub fn sync(store: &Store) -> SyncReport {
     let mut report = SyncReport::default();
@@ -37,14 +39,21 @@ pub fn sync(store: &Store) -> SyncReport {
 }
 
 fn sync_file(store: &Store, path: &Path) -> SyncReport {
-    let mut report = SyncReport { files: 1, ..SyncReport::default() };
-    let Ok(text) = fs::read_to_string(path) else {
+    let mut report = SyncReport {
+        files: 1,
+        ..SyncReport::default()
+    };
+    let Some(delta) = read_new_text(store, path) else {
         report.errors.push(format!("read {}", path.display()));
         return report;
     };
-    let turns = parse_jsonl(&text, path);
+    if delta.unchanged || delta.text.is_empty() {
+        return report;
+    }
+    let turns = parse_jsonl(&delta.text, path);
     let mut inner = ingest_turns(store, &turns);
     inner.files = 1;
+    commit_source(store, path, String::new());
     inner
 }
 
@@ -82,12 +91,7 @@ fn turn_from_value(v: &Value, session: &str, path: &Path) -> Option<LedgerTurn> 
         return None;
     }
     let parsed = parse_model(&model_raw);
-    let ts = v
-        .get("timestamp")
-        .and_then(Value::as_str)
-        .and_then(now_unix_from_rfc3339)
-        .or_else(|| v.get("timestamp").and_then(Value::as_i64))
-        .unwrap_or(0);
+    let ts = v.get("timestamp").map(ts_secs).unwrap_or(0);
     let cache = usage.get("cache_creation").cloned().unwrap_or(Value::Null);
     Some(LedgerTurn {
         ts,
@@ -138,10 +142,6 @@ fn turn_from_value(v: &Value, session: &str, path: &Path) -> Option<LedgerTurn> 
         source_path: path.display().to_string(),
         resets_at: String::new(),
     })
-}
-
-fn json_i64(v: &Value, key: &str) -> i64 {
-    v.get(key).and_then(Value::as_i64).unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -22,7 +22,10 @@ pub use blob::{
 };
 pub use cache::{decode_blob_file, prefetch_blobs, stats as cache_stats};
 pub use error::StoreError;
-pub use ledger::{CacheTotals, EpochRow, LedgerTurn, OverlayRow, WorkspaceSnapshotRow};
+pub use ledger::{
+    token_weighted_hit_rate, CacheTotals, EpochRow, LedgerSource, LedgerTurn, OverlayRow,
+    WorkspaceSnapshotRow,
+};
 pub use observe::{hook_latency_ms, record_hook, record_page_fault};
 pub use paths::{CtxPaths, DEFAULT_HOME_ENV};
 
@@ -1228,11 +1231,16 @@ impl Store {
     }
 
     pub fn reason_breakdown_since(&self, since_unix: i64) -> Result<Vec<(String, u64)>> {
+        self.reason_breakdown_between(since_unix, i64::MAX)
+    }
+
+    pub fn reason_breakdown_between(&self, since_unix: i64, until: i64) -> Result<Vec<(String, u64)>> {
         let conn = self.reader();
-        let mut stmt = conn
-            .prepare("SELECT reasons, avoided_tokens FROM observations WHERE created_at >= ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT reasons, avoided_tokens FROM observations WHERE created_at >= ?1 AND created_at <= ?2",
+        )?;
         let mut acc: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-        let rows = stmt.query_map(params![since_unix], |r| {
+        let rows = stmt.query_map(params![since_unix, until], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
         })?;
         for row in rows {
@@ -1867,7 +1875,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(model, "");
-        assert_eq!(version, "12");
+        assert_eq!(version, "13");
 
         // v8 attributes calls per observation; legacy rows inherit the session.
         conn.execute(

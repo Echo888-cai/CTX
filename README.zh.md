@@ -38,7 +38,7 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.1.2.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1.2/CTX-Apple-Arm-v0.1.2.dmg)**（Intel 用 `CTX-Apple-Intel-v0.1.2.dmg`）。打开后运行 **Install CTX.command**，或把 **CTX.app** 拖进「应用程序」。打开 App 会自动接入已安装的 Cursor / Claude Code / ChatGPT；退出即暂停；删除 App 会还原那些配置。
+**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.1.3.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1.3/CTX-Apple-Arm-v0.1.3.dmg)**（Intel 用 `CTX-Apple-Intel-v0.1.3.dmg`）。打开后运行 **Install CTX.command**，或把 **CTX.app** 拖进「应用程序」。打开 App 会自动接入已安装的 Cursor / Claude Code / ChatGPT；退出即暂停；删除 App 会还原那些配置。
 
 若提示无法打开、来自身份不明的开发者：按住 Control 点 CTX.app → 打开。这是系统对未公证下载的隔离。下面这条命令行安装会去掉隔离。要彻底不弹窗，需要 Apple 开发者账号做公证。
 

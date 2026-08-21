@@ -39,13 +39,43 @@ impl LedgerTurn {
         }
     }
 
+    pub fn cache_write_tokens(&self) -> i64 {
+        self.cache_write_5m.max(0) + self.cache_write_1h.max(0)
+    }
+
+    /// Fresh + cache write + cache read. Matches CC Switch's cacheable input.
+    pub fn cacheable_input(&self) -> i64 {
+        self.uncached_input() + self.cache_read_tokens.max(0) + self.cache_write_tokens()
+    }
+
     pub fn cache_hit_rate(&self) -> f64 {
-        let denom = (self.uncached_input() + self.cache_read_tokens).max(0) as f64;
+        let denom = self.cacheable_input().max(0) as f64;
         if denom <= 0.0 {
             return 0.0;
         }
-        self.cache_read_tokens as f64 / denom
+        self.cache_read_tokens.max(0) as f64 / denom
     }
+}
+
+/// Token-weighted prompt-cache hit rate.
+///
+/// `cache_read / (fresh_input + cache_creation + cache_read)`. Empty → `None`,
+/// so the dashboard can say "no records" instead of 0%.
+pub fn token_weighted_hit_rate(turns: &[LedgerTurn]) -> Option<f64> {
+    if turns.is_empty() {
+        return None;
+    }
+    let mut read = 0i64;
+    let mut denom = 0i64;
+    for turn in turns {
+        let cache = turn.cache_read_tokens.max(0);
+        read += cache;
+        denom += turn.uncached_input() + cache + turn.cache_write_tokens();
+    }
+    if denom <= 0 {
+        return Some(0.0);
+    }
+    Some(read as f64 / denom as f64)
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -63,12 +93,24 @@ pub struct CacheTotals {
 
 impl CacheTotals {
     pub fn hit_rate(&self) -> f64 {
-        let denom = self.input_tokens.saturating_add(self.cache_read_tokens);
+        let denom = self
+            .input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens);
         if denom == 0 {
             return 0.0;
         }
         self.cache_read_tokens as f64 / denom as f64
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LedgerSource {
+    pub path: String,
+    pub mtime: i64,
+    pub size: i64,
+    pub offset: i64,
+    pub extra: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,15 +186,19 @@ impl Store {
     }
 
     pub fn ledger_since(&self, since: i64) -> Result<Vec<LedgerTurn>> {
+        self.ledger_between(since, i64::MAX)
+    }
+
+    pub fn ledger_between(&self, since: i64, until: i64) -> Result<Vec<LedgerTurn>> {
         let conn = self.reader();
         let mut stmt = conn.prepare(
             "SELECT ts, harness, session, cwd, model_raw, model_base, effort, provider,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_5m, cache_write_1h,
                     reasoning_tokens, context_window, is_compaction, quota_used_pct, plan_type,
                     confidence, source_path, resets_at
-             FROM ledger_turns WHERE ts >= ?1 ORDER BY ts ASC",
+             FROM ledger_turns WHERE ts >= ?1 AND ts <= ?2 ORDER BY ts ASC",
         )?;
-        let rows = stmt.query_map([since], map_turn)?;
+        let rows = stmt.query_map([since, until], map_turn)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -161,6 +207,10 @@ impl Store {
     }
 
     pub fn ledger_totals_since(&self, since: i64) -> Result<CacheTotals> {
+        self.ledger_totals_between(since, i64::MAX)
+    }
+
+    pub fn ledger_totals_between(&self, since: i64, until: i64) -> Result<CacheTotals> {
         let conn = self.reader();
         conn.query_row(
             "SELECT COUNT(*),
@@ -171,9 +221,9 @@ impl Store {
                     COALESCE(SUM(reasoning_tokens), 0),
                     COALESCE(SUM(is_compaction), 0),
                     MAX(quota_used_pct),
-                    COALESCE((SELECT plan_type FROM ledger_turns WHERE ts >= ?1 AND plan_type != '' ORDER BY ts DESC LIMIT 1), '')
-             FROM ledger_turns WHERE ts >= ?1",
-            [since],
+                    COALESCE((SELECT plan_type FROM ledger_turns WHERE ts >= ?1 AND ts <= ?2 AND plan_type != '' ORDER BY ts DESC LIMIT 1), '')
+             FROM ledger_turns WHERE ts >= ?1 AND ts <= ?2",
+            [since, until],
             |r| {
                 Ok(CacheTotals {
                     turns: r.get::<_, i64>(0)? as u64,
@@ -189,6 +239,43 @@ impl Store {
             },
         )
         .map_err(Into::into)
+    }
+
+    pub fn ledger_source(&self, path: &str) -> Result<Option<LedgerSource>> {
+        let conn = self.reader();
+        let row = conn.query_row(
+            "SELECT path, mtime, size, offset, extra FROM ledger_sources WHERE path = ?1",
+            [path],
+            |r| {
+                Ok(LedgerSource {
+                    path: r.get(0)?,
+                    mtime: r.get(1)?,
+                    size: r.get(2)?,
+                    offset: r.get(3)?,
+                    extra: r.get(4)?,
+                })
+            },
+        );
+        match row {
+            Ok(s) => Ok(Some(s)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn put_ledger_source(&self, src: &LedgerSource) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO ledger_sources (path, mtime, size, offset, extra)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(path) DO UPDATE SET
+                mtime = excluded.mtime,
+                size = excluded.size,
+                offset = excluded.offset,
+                extra = excluded.extra",
+            params![src.path, src.mtime, src.size, src.offset, src.extra],
+        )?;
+        Ok(())
     }
 
     pub fn last_ledger_turn(&self, session: &str) -> Result<Option<LedgerTurn>> {
@@ -442,11 +529,15 @@ impl Store {
     }
 
     pub fn refetch_totals_since(&self, since: i64) -> Result<(u64, u64)> {
+        self.refetch_totals_between(since, i64::MAX)
+    }
+
+    pub fn refetch_totals_between(&self, since: i64, until: i64) -> Result<(u64, u64)> {
         let conn = self.reader();
         conn.query_row(
             "SELECT COALESCE(SUM(refetch_count), 0), COALESCE(SUM(refetched_tokens), 0)
-             FROM observations WHERE created_at >= ?1",
-            [since],
+             FROM observations WHERE created_at >= ?1 AND created_at <= ?2",
+            [since, until],
             |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
         )
         .map_err(Into::into)
