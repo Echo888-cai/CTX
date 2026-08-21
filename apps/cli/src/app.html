@@ -122,7 +122,7 @@
     flex: 1; height: 30px; border: 1px solid var(--line); border-radius: 999px;
     background: var(--paper); cursor: pointer; font-size: 12px;
   }
-  .range-pills button.on { border-color: var(--green); background: var(--green); color: #fff; }
+  .range-pills button.on { border-color: var(--ink); background: var(--ink); color: #fff; }
   .range-body { display: grid; grid-template-columns: 198px 1fr; gap: 16px; margin-top: 14px; }
   .range-fields { display: flex; flex-direction: column; gap: 10px; }
   .range-fields label { color: var(--muted); font-size: 12px; }
@@ -137,20 +137,26 @@
   .dt-box input[type="time"] { width: 74px; }
   .follow { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--ink); font-size: 13px; cursor: pointer; }
   .follow input { accent-color: var(--green); }
-  .cal { min-width: 0; }
+  .cal { min-width: 0; position: relative; z-index: 2; }
   .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 14px; font-weight: 600; }
   .cal-head button { width: 28px; height: 28px; border: 0; background: transparent; cursor: pointer; color: var(--muted); border-radius: 6px; }
   .cal-head button:hover { background: var(--wash); color: var(--ink); }
-  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
-  .cal-grid span, .cal-grid button { height: 30px; display: grid; place-items: center; font-size: 12px; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; text-align: center; user-select: none; }
+  .cal-grid span, .cal-grid button { height: 34px; display: grid; place-items: center; font-size: 12px; }
   .cal-grid span { color: var(--quiet); }
-  .cal-grid button { border: 0; background: transparent; cursor: pointer; border-radius: 7px; color: var(--ink); }
-  .cal-grid button.mute { color: #c4c8c4; }
-  .cal-grid button.on { background: var(--green); color: #fff; }
-  .cal-grid button.in { background: rgba(7, 139, 69, .12); }
+  .cal-grid button {
+    border: 0; background: transparent; cursor: pointer; border-radius: 8px; color: var(--ink);
+    position: relative; z-index: 1; pointer-events: auto;
+  }
+  .cal-grid button:hover { background: var(--wash); }
+  .cal-grid button.mute { color: #b5bab5; }
+  .cal-grid button.mute:hover { color: var(--ink); }
+  .cal-grid button.on { background: var(--ink); color: #fff; }
+  .cal-grid button.on:hover { background: var(--ink); color: #fff; }
+  .cal-grid button.in { background: rgba(17, 19, 17, .08); }
   .range-actions { display: flex; justify-content: flex-end; gap: 16px; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
   .range-actions button { border: 0; background: transparent; cursor: pointer; font-size: 14px; color: var(--muted); }
-  .range-actions .confirm { min-width: 76px; height: 32px; padding: 0 16px; border-radius: 8px; background: var(--green); color: #fff; font-size: 13px; }
+  .range-actions .confirm { min-width: 76px; height: 32px; padding: 0 16px; border-radius: 8px; background: var(--ink); color: #fff; font-size: 13px; }
   .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; padding: 30px 0 32px; }
   .kpi { min-width: 0; padding: 0 28px; }
   .kpi:first-child { padding-left: 0; }
@@ -328,26 +334,47 @@
   .tool-row .switch { margin-top: 0; }
   .toast {
     position: fixed; left: 50%; top: 22px; z-index: 60;
-    min-width: 220px; max-width: min(440px, calc(100% - 40px));
-    padding: 14px 20px; border: 1px solid rgba(7, 139, 69, .28); border-radius: 14px;
-    background: linear-gradient(180deg, #f3fbf6 0%, #ffffff 70%);
-    color: var(--ink); font-size: 14px; font-weight: 550; line-height: 1.4;
-    box-shadow: 0 12px 36px rgba(7, 139, 69, .16), 0 2px 0 rgba(7, 139, 69, .08) inset;
-    opacity: 0; pointer-events: none; transform: translate(-50%, -12px) scale(.98);
-    transition: opacity .22s cubic-bezier(.22,.8,.2,1), transform .22s cubic-bezier(.22,.8,.2,1);
+    display: flex; align-items: center; gap: 10px;
+    min-width: 0; max-width: min(440px, calc(100% - 40px));
+    padding: 8px 16px 8px 8px; border: 1px solid rgba(17, 19, 17, .08); border-radius: 999px;
+    background: rgba(255, 255, 255, .72); color: var(--ink);
+    font-size: 14px; font-weight: 560; line-height: 1.35; letter-spacing: -.01em;
+    box-shadow: 0 12px 40px rgba(17, 19, 17, .12), 0 0.5px 0 rgba(255,255,255,.85) inset;
+    backdrop-filter: saturate(180%) blur(22px); -webkit-backdrop-filter: saturate(180%) blur(22px);
+    perspective: 140px;
+    opacity: 0; pointer-events: none; transform: translate(-50%, -10px) scale(.98);
+    transition: opacity .28s cubic-bezier(.22,.8,.2,1), transform .38s cubic-bezier(.22,1.1,.36,1);
   }
-  .toast::before {
-    content: ""; position: absolute; left: 14px; top: 50%; width: 8px; height: 8px;
-    border-radius: 50%; background: var(--green); transform: translateY(-50%);
-    box-shadow: 0 0 0 4px rgba(7, 139, 69, .16);
+  .toast-badge {
+    width: 26px; height: 26px; flex: 0 0 auto; border-radius: 50%;
+    display: grid; place-items: center; color: #fff; background: #1d1d1f;
+    box-shadow: 0 1px 2px rgba(17,19,17,.28), inset 0 1px 0 rgba(255,255,255,.18);
+    transform-origin: 50% 50%; backface-visibility: hidden;
   }
-  .toast { padding-left: 34px; }
+  .toast-badge svg { width: 14px; height: 14px; display: block; }
+  .toast-badge svg path.check {
+    fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round;
+    stroke-dasharray: 28; stroke-dashoffset: 28;
+  }
   .toast.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  .toast.show .toast-badge { animation: toast-flip .58s cubic-bezier(.22,1.12,.36,1) both; }
+  .toast.show .toast-badge svg path.check { animation: toast-check .38s .2s ease forwards; }
+  .toast.off .toast-badge { background: #5c615d; }
   .toast.err {
-    border-color: #e2c8c8; background: linear-gradient(180deg, #fff6f6 0%, #ffffff 70%);
-    box-shadow: 0 12px 36px rgba(120, 40, 40, .12);
+    border-color: rgba(160, 40, 40, .14);
+    box-shadow: 0 12px 40px rgba(80, 16, 16, .12), 0 0.5px 0 rgba(255,255,255,.85) inset;
   }
-  .toast.err::before { background: #c44; box-shadow: 0 0 0 4px rgba(204, 68, 68, .16); }
+  .toast.err .toast-badge { background: #c23a3a; }
+  @keyframes toast-flip {
+    0% { transform: rotateY(-96deg) scale(.7); opacity: 0; }
+    58% { transform: rotateY(10deg) scale(1.06); opacity: 1; }
+    100% { transform: rotateY(0deg) scale(1); opacity: 1; }
+  }
+  @keyframes toast-check { to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .toast.show .toast-badge, .toast.show .toast-badge svg path.check { animation: none; }
+    .toast.show .toast-badge svg path.check { stroke-dashoffset: 0; }
+  }
   @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .72; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
   @media (max-width: 1179px) {
@@ -453,7 +480,7 @@
           <div class="heat-pct" id="led-hit">—</div>
           <div class="heat-copy">
             <div class="heat-title" id="led-hit-title">还没有记录</div>
-            <p class="heat-sub" id="led-hit-sub">模型直接读到上次留下的上下文，不必再付一遍全价。</p>
+            <p class="heat-sub" id="led-hit-sub">已接入的 Cursor、Claude Code、ChatGPT 合计，与模型筛选无关。</p>
           </div>
         </div>
         <div class="heat-stats">
@@ -493,11 +520,14 @@
       </section>
     </div>
   </aside>
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <span class="toast-badge" id="toast-badge" aria-hidden="true"></span>
+    <span class="toast-msg" id="toast-msg"></span>
+  </div>
 <script>
 const $ = (id) => document.getElementById(id);
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const state = { range: "7d", model: "all", from: 0, to: 0, follow: true, request: 0, cal: new Date(), chartMode: "tokens", models: [], modelStats: [], drawer: false, poll: null, last: null };
+const state = { range: "7d", model: "all", from: 0, to: 0, follow: true, request: 0, cal: new Date(), calPick: "start", chartMode: "tokens", models: [], modelStats: [], drawer: false, poll: null, last: null };
 const SAVE_RAMP = ["#4fa97b", "#6cbb92", "#86cfa8", "#a3dcbe", "#bfe8d2", "#d8f1e3", "#eaf7ef"];
 const KEPT_COLOR = "var(--kept-400)";
 const DEMO = {
@@ -735,6 +765,10 @@ function renderLedger(led) {
   }
   $("led-read").textContent = compact(Number(L.cache_read_tokens || 0));
   $("led-usd").textContent = L.usd != null ? money(L.usd) : "—";
+  $("ledger-kind").textContent = "全部接入工具";
+  $("led-hit-sub").textContent = pct == null
+    ? "还没有 provider 缓存记录。"
+    : "已接入的 Cursor、Claude Code、ChatGPT 合计，与模型筛选无关。";
 }
 function updateOptions(options, selected) {
   state.models = [{ id: "all", name: "全部模型" }].concat(Array.isArray(options) ? options : []);
@@ -777,14 +811,14 @@ function render(data) {
   $("state").textContent = data.enabled === false ? "已暂停" : "运行中";
   tween($("pct"), totals.reduction_pct, (n) => String(Math.round(n)));
   tween($("saved-tokens"), totals.net_avoided ?? totals.avoided, compact);
-  $("saved-usd").innerHTML = `${esc(money(data.avoided_usd))}${data.avoided_usd_estimated ? '<span class="est" title="仅含已识别模型；Auto / other 未计入">估</span>' : ""}`;
+  $("saved-usd").innerHTML = `${esc(money(data.avoided_usd))}${data.avoided_usd_estimated ? '<span class="est" title="仅含已识别模型；Auto / Other 未计入">估</span>' : ""}`;
   $("kpi-rate-sub").textContent = `原文 ${compact(totals.raw)} → 有效输入 ${compact(totals.delivered)}`;
   const net = totals.net_avoided ?? totals.avoided;
   const refetched = totals.refetched || 0;
   $("kpi-tokens-sub").textContent = refetched || totals.net_avoided != null ? `净节省 ${compact(net)} · 回取 ${compact(refetched)}` : `本周 ${compact(totals.avoided)}`;
   $("kpi-usd-sub").textContent = data.priced_models
     ? `官网输入价 · ${data.priced_models} 个已识别模型`
-    : (data.unpriced_models ? "有 Auto / other，未计入金额" : "未定价");
+    : (data.unpriced_models ? "有 Auto / Other，未计入金额" : "未定价");
   const tools = Array.isArray(data.tools) ? data.tools : (data.harness_summary && data.harness_summary.tools) || [];
   const onTools = tools.filter((t) => t.installed && t.enabled !== false);
   $("kpi-conn").textContent = `${onTools.length}/3`;
@@ -795,8 +829,7 @@ function render(data) {
   state.range = data.range || state.range;
   if (data.from) state.from = Number(data.from);
   if (data.to) state.to = Number(data.to);
-  if ($("range-pop").hidden) syncRangeUi(data.date_label);
-  else $("range-text").textContent = rangeLabel(state.range, data.date_label);
+  if ($("range-pop").hidden) $("range-text").textContent = rangeLabel(state.range, data.date_label);
   state.modelStats = Array.isArray(data.models) ? data.models : [];
   if ($("model-pop").hidden) updateOptions(data.model_options, data.model || state.model);
   renderComposition(data.composition, totals);
@@ -824,17 +857,26 @@ async function post(url, body) {
   const res = await fetch(url, opts);
   return res.json().catch(() => ({ ok: false }));
 }
+const TOAST_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="check" d="M5 12.6 9.6 17 19 7.2"/></svg>';
+const TOAST_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.2" y="5" width="3.6" height="14" rx="1.1" fill="currentColor"/><rect x="14.2" y="5" width="3.6" height="14" rx="1.1" fill="currentColor"/></svg>';
+const TOAST_WARN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v6.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="16.6" r="1.15" fill="currentColor"/></svg>';
 let toastTimer = 0;
 function toast(message, kind) {
   const el = $("toast");
+  const badge = $("toast-badge");
+  const msg = $("toast-msg");
   if (!el || !message) return;
-  el.textContent = message;
-  el.classList.toggle("err", kind === "err");
+  const err = kind === "err";
+  const off = !err && /暂停|关闭/.test(message);
+  msg.textContent = message;
+  badge.innerHTML = err ? TOAST_WARN : (off ? TOAST_PAUSE : TOAST_CHECK);
+  el.classList.toggle("err", err);
+  el.classList.toggle("off", off);
   el.classList.remove("show");
   void el.offsetWidth;
   el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("show"), kind === "err" ? 3200 : 1800);
+  toastTimer = setTimeout(() => el.classList.remove("show"), err ? 3200 : 2000);
 }
 function openDrawer(anchor) {
   state.drawer = true;
@@ -934,8 +976,19 @@ function rangeLabel(kind, dateLabel) {
   if (kind === "custom") return dateLabel || "自定义";
   return kind;
 }
-function syncRangeUi(dateLabel) {
-  $("range-text").textContent = rangeLabel(state.range, dateLabel);
+function presetWindow(kind) {
+  const now = new Date();
+  const end = now.getTime();
+  let start = end;
+  let key = kind;
+  if (kind === "today") start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  else if (kind === "1d") start = end - 86400000;
+  else if (kind === "14d") start = end - 14 * 86400000;
+  else if (kind === "30d") start = end - 30 * 86400000;
+  else { key = "7d"; start = end - 7 * 86400000; }
+  return { kind: key, start, end, follow: true };
+}
+function fillRangeForm() {
   document.querySelectorAll("#range-pills button").forEach((btn) => btn.classList.toggle("on", btn.dataset.preset === state.range));
   const startMs = state.from ? (state.from < 1e12 ? state.from * 1000 : state.from) : Date.now() - 7 * 86400000;
   const endMs = state.to ? (state.to < 1e12 ? state.to * 1000 : state.to) : Date.now();
@@ -943,18 +996,20 @@ function syncRangeUi(dateLabel) {
   $("range-start-date").value = s.date; $("range-start-time").value = s.time;
   $("range-end-date").value = e.date; $("range-end-time").value = e.time;
   $("range-follow").checked = state.follow;
+  state.calPick = "start";
+  state.cal = new Date(startMs);
   renderCalendar();
 }
-function applyPreset(kind, commit) {
-  const now = new Date(); const end = now.getTime(); let start = end;
-  if (kind === "today") start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  else if (kind === "1d") start = end - 86400000;
-  else if (kind === "14d") start = end - 14 * 86400000;
-  else if (kind === "30d") start = end - 30 * 86400000;
-  else { kind = "7d"; start = end - 7 * 86400000; }
-  state.range = kind; state.from = Math.floor(start / 1000); state.to = Math.floor(end / 1000); state.follow = true;
-  $("range-follow").checked = true; syncRangeUi();
-  if (commit) { closeRange(); refresh(); }
+function applyDraftPreset(kind) {
+  const win = presetWindow(kind);
+  const s = toLocalParts(win.start); const e = toLocalParts(win.end);
+  $("range-start-date").value = s.date; $("range-start-time").value = s.time;
+  $("range-end-date").value = e.date; $("range-end-time").value = e.time;
+  $("range-follow").checked = true;
+  state.calPick = "start";
+  state.cal = new Date(win.start);
+  document.querySelectorAll("#range-pills button").forEach((btn) => btn.classList.toggle("on", btn.dataset.preset === win.kind));
+  renderCalendar();
 }
 function draftWindow() {
   const start = fromLocalParts($("range-start-date").value, $("range-start-time").value);
@@ -962,8 +1017,26 @@ function draftWindow() {
   if ($("range-follow").checked) end = Date.now();
   return { start, end };
 }
+function markCustom() {
+  document.querySelectorAll("#range-pills button").forEach((b) => b.classList.remove("on"));
+}
+function setDraftDay(which, dayMs, time) {
+  const parts = toLocalParts(dayMs);
+  if (which === "start") {
+    $("range-start-date").value = parts.date;
+    $("range-start-time").value = time || $("range-start-time").value || "00:00";
+  } else {
+    $("range-end-date").value = parts.date;
+    if (!$("range-follow").checked) $("range-end-time").value = time || $("range-end-time").value || "23:59";
+  }
+}
 function renderCalendar() {
   const host = $("range-cal");
+  if ($("range-follow").checked) {
+    const now = toLocalParts(Date.now());
+    $("range-end-date").value = now.date;
+    $("range-end-time").value = now.time;
+  }
   const cursor = state.cal instanceof Date ? state.cal : new Date();
   const year = cursor.getFullYear(); const month = cursor.getMonth();
   const first = new Date(year, month, 1); const startWeek = first.getDay();
@@ -983,26 +1056,44 @@ function renderCalendar() {
     cells.push(`<button type="button" data-ts="${t}" class="${inMonth ? "" : "mute"} ${on ? "on" : inside ? "in" : ""}">${date}</button>`);
   }
   host.innerHTML = `<div class="cal-head"><button type="button" id="cal-prev" aria-label="上个月">‹</button><span>${year}年${month + 1}月</span><button type="button" id="cal-next" aria-label="下个月">›</button></div><div class="cal-grid">${cells.join("")}</div>`;
-  $("cal-prev").onclick = () => { state.cal = new Date(year, month - 1, 1); renderCalendar(); };
-  $("cal-next").onclick = () => { state.cal = new Date(year, month + 1, 1); renderCalendar(); };
+  $("cal-prev").onclick = (event) => { event.stopPropagation(); state.cal = new Date(year, month - 1, 1); renderCalendar(); };
+  $("cal-next").onclick = (event) => { event.stopPropagation(); state.cal = new Date(year, month + 1, 1); renderCalendar(); };
   host.querySelectorAll("button[data-ts]").forEach((btn) => {
-    btn.onclick = () => {
+    btn.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const day = Number(btn.dataset.ts);
       const startTime = $("range-start-time").value || "00:00";
       const endTime = $("range-end-time").value || "23:59";
-      const currentStart = fromLocalParts($("range-start-date").value, "00:00");
-      if (!$("range-start-date").value || day < currentStart) {
-        const parts = toLocalParts(day); $("range-start-date").value = parts.date; $("range-start-time").value = startTime === "00:00" ? "00:00" : startTime;
+      if (state.calPick !== "end") {
+        setDraftDay("start", day, startTime === "00:00" ? "00:00" : startTime);
+        setDraftDay("end", day, endTime);
+        $("range-follow").checked = false;
+        state.calPick = "end";
       } else {
-        const parts = toLocalParts(day); $("range-end-date").value = parts.date; if (!$("range-follow").checked) $("range-end-time").value = endTime;
+        const currentStart = fromLocalParts($("range-start-date").value, "00:00");
+        if (day < currentStart) {
+          const prevStart = currentStart;
+          setDraftDay("start", day, startTime);
+          setDraftDay("end", prevStart, endTime);
+        } else {
+          setDraftDay("end", day, endTime);
+        }
+        $("range-follow").checked = false;
+        state.calPick = "start";
       }
-      state.range = "custom";
-      document.querySelectorAll("#range-pills button").forEach((b) => b.classList.remove("on"));
+      markCustom();
+      state.cal = new Date(day);
       renderCalendar();
     };
   });
 }
-function openRange() { $("range-pop").hidden = false; $("range-trigger").classList.add("open"); $("range-trigger").setAttribute("aria-expanded", "true"); syncRangeUi($("range-label").textContent); }
+function openRange() {
+  $("range-pop").hidden = false;
+  $("range-trigger").classList.add("open");
+  $("range-trigger").setAttribute("aria-expanded", "true");
+  fillRangeForm();
+}
 function closeRange() { $("range-pop").hidden = true; $("range-trigger").classList.remove("open"); $("range-trigger").setAttribute("aria-expanded", "false"); }
 $("model-trigger").addEventListener("click", (event) => { event.stopPropagation(); closeRange(); if ($("model-pop").hidden) openModel(); else closeModel(); });
 $("model-pop").addEventListener("click", (event) => event.stopPropagation());
@@ -1024,29 +1115,39 @@ $("range-cancel").addEventListener("click", closeRange);
 $("range-ok").addEventListener("click", () => {
   const { start, end } = draftWindow();
   const preset = document.querySelector("#range-pills button.on")?.dataset.preset;
-  if (preset && preset !== "custom") applyPreset(preset, true);
-  else {
+  if (preset) {
+    const win = presetWindow(preset);
+    state.range = win.kind;
+    state.from = Math.floor(win.start / 1000);
+    state.to = Math.floor(win.end / 1000);
+    state.follow = true;
+  } else {
     state.range = "custom";
     state.from = Math.floor(Math.min(start, end) / 1000);
     state.to = Math.floor(Math.max(start, end) / 1000);
     state.follow = $("range-follow").checked;
-    closeRange(); refresh();
   }
+  closeRange();
+  refresh();
 });
 $("range-pills").addEventListener("click", (event) => {
   const btn = event.target.closest("button[data-preset]");
   if (!btn) return;
-  applyPreset(btn.dataset.preset, false);
+  event.stopPropagation();
+  applyDraftPreset(btn.dataset.preset);
 });
 $("range-follow").addEventListener("change", () => {
-  state.follow = $("range-follow").checked;
-  if (state.follow) { const now = toLocalParts(Date.now()); $("range-end-date").value = now.date; $("range-end-time").value = now.time; }
-  state.range = "custom";
-  document.querySelectorAll("#range-pills button").forEach((b) => b.classList.remove("on"));
+  if ($("range-follow").checked) {
+    const now = toLocalParts(Date.now());
+    $("range-end-date").value = now.date;
+    $("range-end-time").value = now.time;
+  }
+  markCustom();
+  state.calPick = "start";
   renderCalendar();
 });
 ["range-start-date","range-start-time","range-end-date","range-end-time"].forEach((id) => {
-  $(id).addEventListener("change", () => { state.range = "custom"; document.querySelectorAll("#range-pills button").forEach((b) => b.classList.remove("on")); renderCalendar(); });
+  $(id).addEventListener("change", () => { markCustom(); state.calPick = "start"; renderCalendar(); });
 });
 $("settings-btn").addEventListener("click", (event) => { event.stopPropagation(); openDrawer(); });
 $("overlay").addEventListener("click", closeDrawer);

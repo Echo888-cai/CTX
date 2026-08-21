@@ -1,6 +1,6 @@
 use ctx_core::{
-    catalog_json, compact_advise, fmt_compact, start_of_today, Config, CtxPaths, ModelRow,
-    PriceBook, Runtime, Snapshot, Store,
+    catalog_json, compact_advise, fmt_compact, start_of_today, Config, CtxPaths, LedgerTurn,
+    ModelRow, PriceBook, Runtime, Snapshot, Store,
 };
 use serde_json::{json, Value};
 
@@ -204,6 +204,7 @@ fn ledger_json(store: &Store, since: i64, book: &PriceBook) -> Value {
     let usd = book.turns_usd(&turns);
     let advice = compact_advise(&turns, 3, book);
     let avoided_compact = ctx_core::avoided_compact_usd(&turns, book);
+    let hit_rate = ledger_hit_rate(&turns);
     let (faults, recalled) = store.refetch_totals_since(since).unwrap_or((0, 0));
     let miss_turns = turns.iter().filter(|t| t.cache_read_tokens == 0).count();
     let miss_tokens: i64 = turns.iter().map(|t| {
@@ -226,7 +227,7 @@ fn ledger_json(store: &Store, since: i64, book: &PriceBook) -> Value {
         "reasoning_tokens": totals.reasoning_tokens,
         "compact_events": totals.compact_events,
         "avoided_compact_usd": avoided_compact,
-        "hit_rate": advice.hit_rate,
+        "hit_rate": hit_rate,
         "usd": usd,
         "plan_type": totals.plan_type,
         "quota_used_pct": totals.quota_used_pct,
@@ -334,6 +335,25 @@ fn snapshot_rows(store: &Store) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Provider cache-read share across every harness that wrote ledger turns.
+/// Token-weighted, not split by model. Codex input already includes cache reads.
+fn ledger_hit_rate(turns: &[LedgerTurn]) -> Option<f64> {
+    if turns.is_empty() {
+        return None;
+    }
+    let mut read = 0i64;
+    let mut denom = 0i64;
+    for turn in turns {
+        let cache = turn.cache_read_tokens.max(0);
+        read += cache;
+        denom += turn.uncached_input() + cache;
+    }
+    if denom <= 0 {
+        return Some(0.0);
+    }
+    Some(read as f64 / denom as f64)
 }
 
 fn harness_label(id: &str) -> String {
@@ -816,9 +836,28 @@ mod tests {
         assert_eq!(model_label("gpt-5"), "GPT-5");
         assert_eq!(model_label("claude-sonnet-4-6"), "Claude Sonnet 4");
         assert_eq!(model_label("claude-opus-4-1"), "Claude Opus 4");
-        assert_eq!(model_label("__unknown__"), "other");
+        assert_eq!(model_label("__unknown__"), "Other");
         assert_eq!(model_label("default"), "Auto");
         assert_eq!(model_label("future-model-x"), "future-model-x");
+    }
+
+    #[test]
+    fn cache_hit_rate_weights_tokens_across_harnesses() {
+        let cursor = LedgerTurn {
+            harness: "cursor".into(),
+            input_tokens: 1_000,
+            cache_read_tokens: 9_000,
+            ..LedgerTurn::default()
+        };
+        let codex = LedgerTurn {
+            harness: "codex".into(),
+            input_tokens: 10_000,
+            cache_read_tokens: 8_000,
+            ..LedgerTurn::default()
+        };
+        let rate = ledger_hit_rate(&[cursor, codex]).unwrap();
+        assert!((rate - 0.85).abs() < 1e-9);
+        assert!(ledger_hit_rate(&[]).is_none());
     }
 
     #[test]

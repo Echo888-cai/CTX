@@ -1,0 +1,12 @@
+CTX for Mac
+
+推荐：双击「Install CTX.command」，会装进「应用程序」并去掉下载隔离。
+
+或把 CTX.app 拖进「应用程序」。若提示无法打开、存在风险：
+  按住 Control 点 CTX.app → 打开 → 打开
+
+不要双击带 -cli- 的压缩包，那是命令行，不是这个 App。
+
+One-liner that does not trip Gatekeeper:
+
+  curl -fsSL https://raw.githubusercontent.com/Echo888-cai/CTX/main/install.sh | bash

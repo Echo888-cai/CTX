@@ -118,14 +118,14 @@ jobs:
 
           ## Mac — install this
 
-          Download the **.dmg**, open it, drag **CTX.app** into Applications.
+          Download the **.dmg**, open it, run **Install CTX.command** (copies to Applications and clears quarantine), or drag **CTX.app** into Applications.
 
           | Computer | Installer |
           |---|---|
           | Apple silicon (M1 / M2 / M3 / M4) | \`CTX-Apple-Arm-v${VER}.dmg\` |
           | Intel Mac | \`CTX-Apple-Intel-v${VER}.dmg\` |
 
-          First launch, if macOS asks: Control-click CTX.app → Open.
+          If macOS says it cannot be opened: Control-click CTX.app → Open → Open. Unsigned GitHub downloads are quarantined; notarizing them needs an Apple Developer ID.
 
           Do not download the \`-cli-\` tarball unless you only want the \`ctx\` command. That is not the Mac app.
 
@@ -158,7 +158,7 @@ jobs:
 
           ## 安装
 
-          **苹果电脑：** 下载 **CTX-Apple-Arm-v${VER}.dmg**（Intel 用 **CTX-Apple-Intel-v${VER}.dmg**），打开后把 **CTX.app** 拖进「应用程序」。不要下 \`-cli-\` 那个压缩包，那是命令行，不是安装包。
+          **苹果电脑：** 下载 **CTX-Apple-Arm-v${VER}.dmg**（Intel 用 **CTX-Apple-Intel-v${VER}.dmg**）。打开后运行 **Install CTX.command**，或把 **CTX.app** 拖进「应用程序」。若提示有风险：按住 Control 点图标 → 打开。不要下 \`-cli-\` 那个压缩包，那是命令行，不是安装包。
 
           **Windows：** \`CTX-Windows-x64-v${VER}.exe\`，改名为 \`ctx.exe\` 放到 PATH。
 

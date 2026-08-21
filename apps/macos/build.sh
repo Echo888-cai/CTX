@@ -39,6 +39,12 @@ package_dmg() {
 
   cp -R "$DIST" "$stage/CTX.app"
   ln -s /Applications "$stage/Applications"
+  cp "$ROOT/Install CTX.command" "$stage/Install CTX.command"
+  chmod +x "$stage/Install CTX.command"
+  cp "$ROOT/打开说明.txt" "$stage/打开说明.txt"
+  if [ -f "$DIST/Contents/Resources/AppIcon.icns" ]; then
+    cp "$DIST/Contents/Resources/AppIcon.icns" "$stage/.VolumeIcon.icns"
+  fi
 
   rm -f "$rw" "$final"
 
@@ -53,8 +59,9 @@ package_dmg() {
   hdiutil create -volname "$vol" -srcfolder "$stage" -ov -format UDRW "$rw" >/dev/null
   rm -rf "$stage"
 
-  mount="$(hdiutil attach -readwrite -noverify -noautoopen "$rw" | grep -oE '/Volumes/.+$' | tail -1)"
-  osascript >/dev/null 2>&1 <<EOF || true
+  mount="$(hdiutil attach -readwrite -noverify -noautoopen -nobrowse "$rw" | grep -oE '/Volumes/.+$' | tail -1)"
+  if [ -z "${CI:-}" ]; then
+    osascript >/dev/null 2>&1 <<EOF || true
 tell application "Finder"
   tell disk "$vol"
     open
@@ -73,6 +80,10 @@ tell application "Finder"
   end tell
 end tell
 EOF
+  fi
+  if [ -f "$mount/.VolumeIcon.icns" ] && command -v SetFile >/dev/null 2>&1; then
+    SetFile -a C "$mount" >/dev/null 2>&1 || true
+  fi
   sync
   sleep 1
   detach_dmg "$mount"
@@ -121,10 +132,8 @@ for asset in ctx-wordmark.png ctx-menubar.png ctx-mark.png ctx-appicon.png; do
   fi
 done
 
-ICON_SRC="$ROOT/Resources/AppIcon.png"
-if [ ! -f "$ICON_SRC" ]; then
-  ICON_SRC="$ASSETS/ctx-appicon.png"
-fi
+ICON_SRC="$ASSETS/ctx-appicon.png"
+# Full-bleed square only. A pre-rounded PNG becomes a square inside macOS's squircle (two layers).
 if [ ! -f "$ICON_SRC" ]; then
   ICON_SRC="$ASSETS/ctx-mark.png"
 fi

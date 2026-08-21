@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Dashboard: date range waits for Confirm; model list uses `Other`; enable toast is a flip badge, not a green wash.
+- macOS icon is a full-bleed square so Dock / Launchpad do not nest a rounded square inside the system squircle.
+- DMG includes `Install CTX.command`, which copies the app and clears the download quarantine flag.
+
 ## 0.1
 
 - Public installer release: `CTX-Apple-Arm-v0.1.dmg`, `CTX-Apple-Intel-v0.1.dmg`, `CTX-Windows-x64-v0.1.exe`, `CTX-Linux-x64-v0.1.tar.gz`.

@@ -38,9 +38,9 @@ No cloud. No extra API tokens. No LLM summarizer. Rust, local SQLite + BLAKE3 + 
 
 ## Install
 
-**macOS:** on [Releases](https://github.com/Echo888-cai/CTX/releases/latest) download **[CTX-Apple-Arm-v0.1.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1/CTX-Apple-Arm-v0.1.dmg)** (Intel: `CTX-Apple-Intel-v0.1.dmg`). Open the disk image and **drag CTX.app into Applications**. The `-cli-` tarball is the command-line `ctx`, not the Mac app.
+**macOS:** on [Releases](https://github.com/Echo888-cai/CTX/releases/latest) download **[CTX-Apple-Arm-v0.1.1.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1.1/CTX-Apple-Arm-v0.1.1.dmg)** (Intel: `CTX-Apple-Intel-v0.1.1.dmg`). Open the disk image and run **Install CTX.command**, or drag **CTX.app** into Applications.
 
-First launch, if macOS asks: Control-click CTX.app → Open.
+If macOS says the app is damaged or from an unidentified developer: Control-click CTX.app → Open → Open. That warning is Gatekeeper quarantine on an unsigned build. The one-liner below copies the app and clears the flag. Notarized builds need an Apple Developer ID.
 
 CLI (macOS / Linux), which also installs `CTX.app` on Mac:
 

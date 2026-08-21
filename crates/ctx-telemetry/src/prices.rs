@@ -236,11 +236,11 @@ impl PriceBook {
     }
 
     /// Human label for a stored model id: catalog name when known, else the id,
-    /// else `other` / `Auto`.
+    /// else `Other` / `Auto`.
     pub fn display_name(model_id: &str) -> String {
         let id = model_id.trim();
         if id.is_empty() || id == "__unknown__" || id.eq_ignore_ascii_case("unknown") {
-            return "other".into();
+            return "Other".into();
         }
         if id.eq_ignore_ascii_case("default") || id.eq_ignore_ascii_case("auto") {
             return "Auto".into();
@@ -666,8 +666,8 @@ mod tests {
 
     #[test]
     fn display_name_uses_other_and_auto() {
-        assert_eq!(PriceBook::display_name("__unknown__"), "other");
-        assert_eq!(PriceBook::display_name(""), "other");
+        assert_eq!(PriceBook::display_name("__unknown__"), "Other");
+        assert_eq!(PriceBook::display_name(""), "Other");
         assert_eq!(PriceBook::display_name("default"), "Auto");
         assert_eq!(PriceBook::display_name("auto"), "Auto");
         assert_eq!(PriceBook::display_name("grok-4.6"), "Grok 4.6");

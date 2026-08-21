@@ -38,9 +38,9 @@ CTX 是 **无损虚拟化**：
 
 ## 安装
 
-**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.1.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1/CTX-Apple-Arm-v0.1.dmg)**（Intel 用 `CTX-Apple-Intel-v0.1.dmg`）。打开后把 **CTX.app** 拖进「应用程序」。带 `-cli-` 的是命令行，不是安装包。
+**macOS：** 在 [Releases](https://github.com/Echo888-cai/CTX/releases/latest) 下载 **[CTX-Apple-Arm-v0.1.1.dmg](https://github.com/Echo888-cai/CTX/releases/download/v0.1.1/CTX-Apple-Arm-v0.1.1.dmg)**（Intel 用 `CTX-Apple-Intel-v0.1.1.dmg`）。打开后运行 **Install CTX.command**，或把 **CTX.app** 拖进「应用程序」。
 
-第一次打开若提示无法验证：按住 Control 点 CTX.app → 打开。
+若提示无法打开、来自身份不明的开发者：按住 Control 点 CTX.app → 打开。这是系统对未公证下载的隔离。下面这条命令行安装会去掉隔离。要彻底不弹窗，需要 Apple 开发者账号做公证。
 
 命令行（macOS / Linux），Mac 上会顺便装好 `CTX.app`：
 
