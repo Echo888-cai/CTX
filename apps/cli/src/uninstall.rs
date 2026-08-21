@@ -10,8 +10,8 @@ use crate::app;
 use crate::doctor::hooks_contain_ctx;
 use crate::setup::{read_json_object, write_json_atomic};
 
-/// Remove harness hooks, stop the dashboard, and optionally archive ~/.ctx.
-pub fn run(purge: bool, yes: bool) -> anyhow::Result<()> {
+/// Remove CTX entries from IDE configs. Leaves ~/.ctx in place.
+pub fn strip_harnesses() -> anyhow::Result<()> {
     let home = dirs::home_dir().context("home directory")?;
     strip_claude(&home)?;
     strip_cursor(&home)?;
@@ -21,6 +21,12 @@ pub fn run(purge: bool, yes: bool) -> anyhow::Result<()> {
     strip_jetbrains(&home)?;
     strip_codex(&home)?;
     strip_claude_desktop(&home)?;
+    Ok(())
+}
+
+/// Remove harness hooks, stop the dashboard, and optionally archive ~/.ctx.
+pub fn run(purge: bool, yes: bool) -> anyhow::Result<()> {
+    strip_harnesses()?;
     if let Err(err) = app::run(8741, false, false, true, false) {
         eprintln!("dashboard service: {err}");
     }

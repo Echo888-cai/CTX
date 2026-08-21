@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Opening CTX.app wires detected IDEs (Cursor, Claude Code, ChatGPT). Quitting pauses saving. Deleting the app restores those IDE configs.
+
 ## 0.1.1
 
 - Dashboard: date range waits for Confirm; model list uses `Other`; enable toast is a flip badge, not a green wash.

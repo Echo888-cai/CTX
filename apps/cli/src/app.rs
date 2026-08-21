@@ -10,6 +10,7 @@ use ctx_core::CtxPaths;
 use serde_json::{json, Value};
 
 use crate::harnesses;
+use crate::lifecycle;
 use crate::setup;
 use crate::status;
 use crate::uninstall;
@@ -46,6 +47,9 @@ pub fn run(
 }
 
 async fn serve(port: u16, open: bool) -> anyhow::Result<()> {
+    if let Err(err) = lifecycle::activate(None) {
+        tracing::warn!(error = %err, "auto-wire on dashboard start failed");
+    }
     let addr = format!("127.0.0.1:{port}");
     let url = format!("http://{addr}");
     let listener = match TcpListener::bind(&addr).await {
@@ -66,33 +70,65 @@ async fn serve(port: u16, open: bool) -> anyhow::Result<()> {
     }
     maybe_auto_snapshot();
     loop {
-        let (mut stream, _) = match listener.accept().await {
+        tokio::select! {
+            _ = shutdown_signal() => break,
+            accepted = listener.accept() => {
+                let (mut stream, _) = match accepted {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "dashboard accept failed");
+                        continue;
+                    }
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 32_768];
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let (head, req_body) = match req.split_once("\r\n\r\n") {
+                        Some(pair) => pair,
+                        None => (req.as_ref(), ""),
+                    };
+                    let (method, path, query) = parse_req(head);
+                    let (status, content_type, body) = dispatch_with(method, path, query, req_body);
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                });
+            }
+        }
+    }
+    if let Err(err) = lifecycle::deactivate() {
+        tracing::warn!(error = %err, "pause on dashboard stop failed");
+    }
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
             Ok(s) => s,
-            Err(err) => {
-                tracing::warn!(error = %err, "dashboard accept failed");
-                continue;
+            Err(_) => {
+                let _ = ctrl_c.await;
+                return;
             }
         };
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 32_768];
-            let n = match stream.read(&mut buf).await {
-                Ok(0) | Err(_) => return,
-                Ok(n) => n,
-            };
-            let req = String::from_utf8_lossy(&buf[..n]);
-            let (head, req_body) = match req.split_once("\r\n\r\n") {
-                Some(pair) => pair,
-                None => (req.as_ref(), ""),
-            };
-            let (method, path, query) = parse_req(head);
-            let (status, content_type, body) = dispatch_with(method, path, query, req_body);
-            let resp = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            let _ = stream.write_all(&body).await;
-        });
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
     }
 }
 
@@ -188,6 +224,14 @@ fn dispatch_with(
         ("POST", "/api/setup") => json_ok(setup_target(query_param(query, "target"))),
         ("POST", "/api/pause") => json_ok(set_enabled(false)),
         ("POST", "/api/resume") => json_ok(set_enabled(true)),
+        ("POST", "/api/lifecycle/activate") => {
+            let bundle = query_param(query, "bundle");
+            json_ok(lifecycle_json(lifecycle::activate(
+                (!bundle.is_empty()).then_some(bundle),
+            )))
+        }
+        ("POST", "/api/lifecycle/deactivate") => json_ok(lifecycle_json(lifecycle::deactivate())),
+        ("POST", "/api/lifecycle/detach") => json_ok(lifecycle_json(lifecycle::detach())),
         ("POST", "/api/snapshot") => json_ok(snapshot_create()),
         ("POST", "/api/snapshot/restore") => json_ok(snapshot_restore(query_param(query, "id"))),
         ("GET", "/api/config") => json_ok(config_get()),
@@ -334,6 +378,13 @@ fn prometheus_text() -> Vec<u8> {
 
 fn json_ok(value: Value) -> (&'static str, &'static str, Vec<u8>) {
     ("200 OK", "application/json", value.to_string().into_bytes())
+}
+
+fn lifecycle_json(result: anyhow::Result<Value>) -> Value {
+    match result {
+        Ok(v) => v,
+        Err(err) => json!({"ok": false, "error": err.to_string()}),
+    }
 }
 
 fn dashboard_payload(range: &str, model: &str, from: Option<i64>, to: Option<i64>) -> Value {

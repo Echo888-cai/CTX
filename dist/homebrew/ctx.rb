@@ -3,7 +3,7 @@
 class Ctx < Formula
   desc "Virtual memory for AI context"
   homepage "https://github.com/Echo888-cai/CTX"
-  version "0.1.1"
+  version "0.1.2"
   license "MIT"
   sha256 :no_check
 

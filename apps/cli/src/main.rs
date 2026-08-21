@@ -6,6 +6,7 @@ mod exec;
 mod harnesses;
 mod inspect;
 mod ledger;
+mod lifecycle;
 mod proof;
 mod proxy;
 mod search;
@@ -128,6 +129,11 @@ enum Commands {
         #[arg(long)]
         install_app: bool,
     },
+    /// Wire on open, pause on quit, restore on delete
+    Lifecycle {
+        #[command(subcommand)]
+        action: LifecycleAction,
+    },
     /// Serve the CTX MCP (stdio)
     Mcp,
     /// Intercept plane: Anthropic/OpenAI-compatible proxy
@@ -211,6 +217,22 @@ enum VersionAction {
     Use { id: String },
     /// Switch back to the previously running pinned copy
     Rollback,
+}
+
+#[derive(Subcommand)]
+enum LifecycleAction {
+    /// Detect IDEs, write hooks, and resume
+    Activate {
+        /// Path to CTX.app so deletion can restore IDE configs
+        #[arg(long)]
+        bundle: Option<String>,
+    },
+    /// Pause saving; keep hooks
+    Deactivate,
+    /// Remove CTX from IDE configs
+    Detach,
+    /// If CTX.app was deleted, restore IDE configs
+    Sweep,
 }
 
 fn main() {
@@ -353,6 +375,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             uninstall_service,
             install_app,
         ),
+        Some(Commands::Lifecycle { action }) => match action {
+            LifecycleAction::Activate { bundle } => {
+                let v = lifecycle::activate(bundle.as_deref())?;
+                println!("{v}");
+                Ok(())
+            }
+            LifecycleAction::Deactivate => {
+                let v = lifecycle::deactivate()?;
+                println!("{v}");
+                Ok(())
+            }
+            LifecycleAction::Detach => {
+                let v = lifecycle::detach()?;
+                println!("{v}");
+                Ok(())
+            }
+            LifecycleAction::Sweep => {
+                let v = lifecycle::sweep()?;
+                println!("{v}");
+                Ok(())
+            }
+        },
         Some(Commands::Mcp) => {
             let rt = Runtime::open_default().context("open CTX store")?;
             ctx_mcp::serve(rt)?;

@@ -9,80 +9,156 @@ use ctx_core::{single_quote, Config, CtxPaths, Store};
 
 use crate::doctor::{hooks_contain_ctx, is_ctx_hook_command};
 
-pub fn init() -> anyhow::Result<()> {
+pub fn ensure_store() -> anyhow::Result<CtxPaths> {
     let paths = CtxPaths::default_home()?;
     Store::open(paths.clone())?;
-    Config::default().save(&paths)?;
+    if !paths.config_path().exists() {
+        Config::default().save(&paths)?;
+    }
+    Ok(paths)
+}
 
-    let claude = detect_claude();
-    let claude_desktop = detect_claude_desktop();
-    let cursor = detect_cursor();
-    let windsurf = detect_windsurf();
-    let vscode = detect_vscode();
-    let cont = detect_continue();
-    let jetbrains = detect_jetbrains();
-    let aider = detect_aider();
-    let codex = detect_codex();
+pub fn init() -> anyhow::Result<()> {
+    let paths = ensure_store()?;
+    let detected = detections();
 
     println!("CTX  {}", paths.root().display());
     println!();
     println!("Detected");
-    println!("  {}  Claude Code", mark(claude));
-    println!("  {}  Claude Desktop", mark(claude_desktop));
-    println!("  {}  Cursor", mark(cursor));
-    println!("  {}  Windsurf", mark(windsurf));
-    println!("  {}  VS Code / Copilot", mark(vscode));
-    println!("  {}  Continue.dev", mark(cont));
-    println!("  {}  JetBrains", mark(jetbrains));
-    println!("  {}  Aider", mark(aider));
-    println!("  {}  ChatGPT", mark(codex));
+    println!("  {}  Claude Code", mark(detected.claude));
+    println!("  {}  Claude Desktop", mark(detected.claude_desktop));
+    println!("  {}  Cursor", mark(detected.cursor));
+    println!("  {}  Windsurf", mark(detected.windsurf));
+    println!("  {}  VS Code / Copilot", mark(detected.vscode));
+    println!("  {}  Continue.dev", mark(detected.cont));
+    println!("  {}  JetBrains", mark(detected.jetbrains));
+    println!("  {}  Aider", mark(detected.aider));
+    println!("  {}  ChatGPT", mark(detected.codex));
     println!();
 
-    if claude {
-        setup_claude()?;
-        println!("  ✓  Claude Code  hooks + mcp");
+    let wired = wire_detected()?;
+    for id in &wired {
+        println!("  ✓  {}", wire_label(id));
     }
-    if claude_desktop {
-        setup_claude_desktop()?;
-        println!("  ✓  Claude Desktop  mcp");
-    }
-    if cursor {
-        setup_cursor()?;
-        println!("  ✓  Cursor       hooks + mcp");
-    }
-    if windsurf {
-        setup_windsurf()?;
-        println!("  ✓  Windsurf     mcp");
-    }
-    if vscode {
-        let _ = setup_vscode();
-        let _ = setup_copilot();
-        println!("  ✓  VS Code      mcp");
-    }
-    if cont {
-        setup_continue()?;
-        println!("  ✓  Continue     mcp");
-    }
-    if jetbrains {
-        setup_jetbrains()?;
-        println!("  ✓  JetBrains    mcp");
-    }
-    if aider {
-        setup_aider()?;
-        println!("  ✓  Aider        wrapper");
-    }
-    if codex {
-        setup_codex()?;
-        println!("  ✓  ChatGPT      hooks");
-    }
-    if !claude && !claude_desktop && !cursor && !windsurf && !vscode && !cont && !jetbrains && !aider && !codex {
+    if wired.is_empty() && !detected.any() {
         println!("  ·  none — later: ctx setup claude, cursor, windsurf, vscode, continue, jetbrains, aider, or codex");
     }
 
-    let _ = crate::snapshot::pin();
     println!();
     println!("Next: ctx demo · ctx doctor");
     Ok(())
+}
+
+struct Detections {
+    claude: bool,
+    claude_desktop: bool,
+    cursor: bool,
+    windsurf: bool,
+    vscode: bool,
+    cont: bool,
+    jetbrains: bool,
+    aider: bool,
+    codex: bool,
+}
+
+impl Detections {
+    fn any(&self) -> bool {
+        self.claude
+            || self.claude_desktop
+            || self.cursor
+            || self.windsurf
+            || self.vscode
+            || self.cont
+            || self.jetbrains
+            || self.aider
+            || self.codex
+    }
+}
+
+fn detections() -> Detections {
+    Detections {
+        claude: detect_claude(),
+        claude_desktop: detect_claude_desktop(),
+        cursor: detect_cursor(),
+        windsurf: detect_windsurf(),
+        vscode: detect_vscode(),
+        cont: detect_continue(),
+        jetbrains: detect_jetbrains(),
+        aider: detect_aider(),
+        codex: detect_codex(),
+    }
+}
+
+fn harness_skipped(cfg: &Config, id: &str) -> bool {
+    cfg.disabled_harnesses.iter().any(|item| {
+        item == id
+            || (id == "claude-code" && item == "claude")
+            || (id == "codex" && matches!(item.as_str(), "chatgpt" | "openai-codex" | "codex"))
+    })
+}
+
+fn wire_label(id: &str) -> &'static str {
+    match id {
+        "claude-code" => "Claude Code  hooks + mcp",
+        "claude-desktop" => "Claude Desktop  mcp",
+        "cursor" => "Cursor       hooks + mcp",
+        "windsurf" => "Windsurf     mcp",
+        "vscode" => "VS Code      mcp",
+        "continue" => "Continue     mcp",
+        "jetbrains" => "JetBrains    mcp",
+        "aider" => "Aider        wrapper",
+        "codex" => "ChatGPT      hooks",
+        _ => "CTX",
+    }
+}
+
+/// Write CTX into every detected IDE. Harnesses turned off in the dashboard stay off.
+pub fn wire_detected() -> anyhow::Result<Vec<&'static str>> {
+    let paths = ensure_store()?;
+    let cfg = Config::load(&paths);
+    let detected = detections();
+    let mut wired = Vec::new();
+
+    if detected.claude && !harness_skipped(&cfg, "claude-code") {
+        setup_claude()?;
+        wired.push("claude-code");
+    }
+    if detected.claude_desktop && !harness_skipped(&cfg, "claude-desktop") {
+        setup_claude_desktop()?;
+        wired.push("claude-desktop");
+    }
+    if detected.cursor && !harness_skipped(&cfg, "cursor") {
+        setup_cursor()?;
+        wired.push("cursor");
+    }
+    if detected.windsurf && !harness_skipped(&cfg, "windsurf") {
+        setup_windsurf()?;
+        wired.push("windsurf");
+    }
+    if detected.vscode && !harness_skipped(&cfg, "vscode") {
+        let _ = setup_vscode();
+        let _ = setup_copilot();
+        wired.push("vscode");
+    }
+    if detected.cont && !harness_skipped(&cfg, "continue") {
+        setup_continue()?;
+        wired.push("continue");
+    }
+    if detected.jetbrains && !harness_skipped(&cfg, "jetbrains") {
+        setup_jetbrains()?;
+        wired.push("jetbrains");
+    }
+    if detected.aider && !harness_skipped(&cfg, "aider") {
+        setup_aider()?;
+        wired.push("aider");
+    }
+    if detected.codex && !harness_skipped(&cfg, "codex") {
+        setup_codex()?;
+        wired.push("codex");
+    }
+
+    let _ = crate::snapshot::pin();
+    Ok(wired)
 }
 
 pub fn setup(target: &str) -> anyhow::Result<()> {

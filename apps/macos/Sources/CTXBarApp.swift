@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let titleObserver {
             NotificationCenter.default.removeObserver(titleObserver)
         }
+        DashboardLoader.shared.stop()
     }
 
     static func forceMenuBarVisible() {

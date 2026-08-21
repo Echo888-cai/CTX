@@ -33,14 +33,35 @@ final class DashboardLoader: ObservableObject {
     @Published var reloadToken = 0
     private var child: Process?
     private var attempts = 0
+    private var stopping = false
 
     var url: URL { URL(string: "http://127.0.0.1:\(port)/")! }
 
     func start() {
+        stopping = false
         attempts = 0
-        message = "正在打开 CTX…"
+        message = "正在接入已安装的工具…"
         spawnServer()
         poll()
+    }
+
+    func stop() {
+        stopping = true
+        let port = self.port
+        let proc = child
+        child = nil
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            Self.post("/api/pause", port: port)
+            _ = try? CtxCLI.run(["lifecycle", "deactivate"])
+            group.leave()
+        }
+        _ = group.wait(timeout: .now() + 3)
+        if let proc, proc.isRunning {
+            proc.terminate()
+            proc.waitUntilExit()
+        }
     }
 
     private func spawnServer() {
@@ -52,6 +73,9 @@ final class DashboardLoader: ObservableObject {
         let proc = Process()
         proc.executableURL = bin
         proc.arguments = ["app", "--port", "\(port)", "--no-open"]
+        var env = ProcessInfo.processInfo.environment
+        env["CTX_APP_BUNDLE"] = Bundle.main.bundlePath
+        proc.environment = env
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
@@ -62,12 +86,25 @@ final class DashboardLoader: ObservableObject {
         }
     }
 
+    private static func post(_ path: String, port: UInt16) {
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 2
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { _, _, _ in sem.signal() }.resume()
+        _ = sem.wait(timeout: .now() + 2)
+    }
+
     private func poll() {
         attempts += 1
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let up = self?.isUp() ?? false
             DispatchQueue.main.async {
                 guard let self else { return }
+                if self.stopping {
+                    return
+                }
                 if up {
                     self.message = nil
                     self.reloadToken += 1
